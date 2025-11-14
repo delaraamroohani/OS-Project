@@ -2,6 +2,24 @@
 
 struct stat;
 
+// Process state enum (must match kernel definition)
+enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+
+// Process information structure
+struct proc_info {
+  char name[16];
+  int pid;
+  int ppid;
+  enum procstate state;
+};
+
+// Process tree structure
+#define NPROC 64
+struct proc_tree {
+  int count;
+  struct proc_info processes[NPROC];
+};
+
 // system calls
 int fork(void);
 int exit(int) __attribute__((noreturn));
@@ -25,7 +43,7 @@ char* sys_sbrk(int,int);
 int pause(int);
 int uptime(void);
 int clcnt(void);
-int ptree(int pid, char *buf, int bufsize);
+int ptree(int pid, struct proc_tree *tree);
 
 // ulib.c
 int stat(const char*, struct stat*);

@@ -7,8 +7,8 @@
 #include "proc.h"
 #include "vm.h"
 
-extern int ptree(int pid, uint64 dst, int bufsize);
-
+// Forward declaration
+int ptree(int pid, struct proc_tree *tree);
 
 uint64
 sys_exit(void)
@@ -122,12 +122,24 @@ uint64
 sys_ptree(void)
 {
   int pid;
-  uint64 user_dst;
-  int bufsize;
+  uint64 tree_addr;
+  struct proc_tree tree;
+  struct proc *p = myproc();
 
   argint(0, &pid);
-  argaddr(1, &user_dst);
-  argint(2, &bufsize);
+  argaddr(1, &tree_addr);
 
-  return ptree(pid, user_dst, bufsize);
+  // Call the kernel ptree function
+  int result = ptree(pid, &tree);
+  
+  if (result < 0) {
+    return -1;
+  }
+
+  // Copy the result to user space
+  if (copyout(p->pagetable, tree_addr, (char *)&tree, sizeof(tree)) < 0) {
+    return -1;
+  }
+
+  return 0;
 }

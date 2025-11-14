@@ -689,150 +689,67 @@ procdump(void)
   }
 }
 
-
-// helper: convert non-negative integer to ascii into buf, return length
-static int
-kitoa(int x, char *buf)
+// Helper function to recursively add process and its children to the tree
+static void
+ptree_add_recursive(struct proc *root, struct proc_tree *tree)
 {
-  char tmp[16];
-  int ti = 0;
-  if (x == 0) {
-    buf[0] = '0';
-    return 1;
+  struct proc *p;
+  
+  if (tree->count >= NPROC)
+    return;
+
+  // Add current process to tree
+  acquire(&root->lock);
+  if (root->state != UNUSED) {
+    struct proc_info *info = &tree->processes[tree->count];
+    safestrcpy(info->name, root->name, sizeof(info->name));
+    info->pid = root->pid;
+    info->ppid = root->parent ? root->parent->pid : 0;
+    info->state = root->state;
+    tree->count++;
   }
-  while (x > 0 && ti < (int)sizeof(tmp)-1) {
-    tmp[ti++] = '0' + (x % 10);
-    x /= 10;
+  release(&root->lock);
+
+  // Find and add all children recursively
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->parent == root && p->state != UNUSED) {
+      release(&p->lock);
+      ptree_add_recursive(p, tree);
+    } else {
+      release(&p->lock);
+    }
   }
-  // reverse into buf
-  int i;
-  for (i = 0; i < ti; i++)
-    buf[i] = tmp[ti - 1 - i];
-  return ti;
 }
 
-// forward declaration
-static int ptree_walk(struct proc *node, int depth, pagetable_t pagetable, uint64 dst,
-                      int bufsize, int *writtenp);
-
-/*
- * ptree: build textual process tree rooted at 'pid', copying into
- * user's buffer at virtual address 'dst' (length bufsize).
- * Returns number of bytes written, or -1 on error.
- */
+// System call implementation: build process tree rooted at given pid
 int
-ptree(int rootpid, uint64 dst, int bufsize)
+ptree(int rootpid, struct proc_tree *tree)
 {
   struct proc *p;
   struct proc *root = 0;
-  int written = 0;
 
-  // find root process
+  // Find the root process
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pid == rootpid) {
+    if (p->pid == rootpid && p->state != UNUSED) {
       root = p;
       release(&p->lock);
       break;
     }
     release(&p->lock);
   }
+
   if (!root) {
-    return -1; // pid not found
+    return -1; // Process not found
   }
 
-  // Use caller's pagetable (the user buffer belongs to calling process)
-  pagetable_t caller_pg = myproc()->pagetable;
+  // Initialize tree
+  tree->count = 0;
 
-  // walk and write; ptree_walk acquires locks as needed
-  int ret = ptree_walk(root, 0, caller_pg, dst, bufsize, &written);
+  // Build the tree recursively
+  ptree_add_recursive(root, tree);
 
-  if (ret < 0)
-    return -1;
-  return written;
+  return 0; // Success
 }
 
-/*
- * Recursive walker:
- * - node: current proc pointer (we assume proc.lock is held by caller)
- * - depth: indentation level
- * - pagetable: user's pagetable for copyout
- * - dst, bufsize: user buffer base / size
- * - writtenp: pointer to int tracking written bytes so far (updated)
- *
- * Returns 0 on success (or when buffer filled), -1 on copyout error.
- */
-static int
-ptree_walk(struct proc *node, int depth, pagetable_t pagetable, uint64 dst,
-           int bufsize, int *writtenp)
-{
-  char line[256];
-  int off = 0;
-  int i;
-  int node_pid;
-
-  // Acquire lock to safely read node's pid
-  acquire(&node->lock);
-  node_pid = node->pid;
-  release(&node->lock);
-
-  // indentation: 2 spaces per depth
-  for (i = 0; i < depth; i++) {
-    if (off + 2 >= (int)sizeof(line)) break;
-    line[off++] = ' ';
-    line[off++] = ' ';
-  }
-
-  // pid
-  int pid_len = kitoa(node_pid, line + off);
-  off += pid_len;
-  if (off > (int)sizeof(line)) off = (int)sizeof(line);
-
-  if (off < (int)sizeof(line) - 1)
-    line[off++] = ' ';
-
-  // newline
-  if (off < (int)sizeof(line))
-    line[off++] = '\n';
-
-  // Ensure off doesn't exceed buffer size
-  if (off > (int)sizeof(line)) off = (int)sizeof(line);
-
-  // Check remaining user buffer space
-  int remaining = bufsize - *writtenp;
-  if (remaining <= 0) {
-    // buffer exhausted
-    return 0;
-  }
-
-  if (off > remaining) {
-    // copy only the portion that fits
-    if (copyout(pagetable, dst + *writtenp, line, remaining) < 0)
-      return -1;
-    *writtenp += remaining;
-    // buffer is full; stop traversal
-    return 0;
-  } else {
-    if (copyout(pagetable, dst + *writtenp, line, off) < 0)
-      return -1;
-    *writtenp += off;
-  }
-
-  // Now iterate children, acquiring lock for each child
-  struct proc *p;
-  for (p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock);
-    if (p->parent == node) {
-      release(&p->lock);
-      // recurse with proper locking
-      if (ptree_walk(p, depth + 1, pagetable, dst, bufsize, writtenp) < 0)
-        return -1;
-      if (*writtenp >= bufsize) // buffer full, stop early
-        return 0;
-    } else {
-      release(&p->lock);
-    }
-  }
-
-  return 0;
-}

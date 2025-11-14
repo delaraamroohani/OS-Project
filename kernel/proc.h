@@ -81,6 +81,20 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+// Process information for ptree system call
+struct proc_info {
+  char name[16];
+  int pid;
+  int ppid;
+  enum procstate state;
+};
+
+// Process tree structure for ptree system call
+struct proc_tree {
+  int count;
+  struct proc_info processes[NPROC];
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -105,6 +119,4 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
-
-int ptree(int pid, uint64 dst, int bufsize);
 
