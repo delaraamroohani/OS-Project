@@ -7,7 +7,8 @@ int
 main(int argc, char *argv[])
 {
   char buf[4096];
-  int pid = 1; // root of tree to print (try 1 or your running pid)
+  memset(buf, 0, sizeof(buf));  // Ensure null-termination
+  int pid = 1;
   int n;
 
   if (argc > 1)

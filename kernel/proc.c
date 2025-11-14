@@ -732,22 +732,21 @@ ptree(int rootpid, uint64 dst, int bufsize)
     acquire(&p->lock);
     if (p->pid == rootpid) {
       root = p;
+      release(&p->lock);
       break;
     }
+    release(&p->lock);
   }
   if (!root) {
-    release(&p->lock);
     return -1; // pid not found
   }
 
-  // Keep the lock for traversal to maintain a consistent snapshot
   // Use caller's pagetable (the user buffer belongs to calling process)
   pagetable_t caller_pg = myproc()->pagetable;
 
-  // walk and write; ptree_walk uses proc.lock (we already hold it)
+  // walk and write; ptree_walk acquires locks as needed
   int ret = ptree_walk(root, 0, caller_pg, dst, bufsize, &written);
 
-  release(&p->lock);
   if (ret < 0)
     return -1;
   return written;
@@ -767,9 +766,15 @@ static int
 ptree_walk(struct proc *node, int depth, pagetable_t pagetable, uint64 dst,
            int bufsize, int *writtenp)
 {
-  char line[128];
+  char line[256];
   int off = 0;
   int i;
+  int node_pid;
+
+  // Acquire lock to safely read node's pid
+  acquire(&node->lock);
+  node_pid = node->pid;
+  release(&node->lock);
 
   // indentation: 2 spaces per depth
   for (i = 0; i < depth; i++) {
@@ -779,19 +784,19 @@ ptree_walk(struct proc *node, int depth, pagetable_t pagetable, uint64 dst,
   }
 
   // pid
-  off += kitoa(node->pid, line + off);
+  int pid_len = kitoa(node_pid, line + off);
+  off += pid_len;
+  if (off > (int)sizeof(line)) off = (int)sizeof(line);
+
   if (off < (int)sizeof(line) - 1)
     line[off++] = ' ';
-
-  // name: node->name size in xv6 is 16 typically
-  for (i = 0; i < (int)sizeof(node->name) && node->name[i] != '\0'; i++) {
-    if (off >= (int)sizeof(line) - 1) break;
-    line[off++] = node->name[i];
-  }
 
   // newline
   if (off < (int)sizeof(line))
     line[off++] = '\n';
+
+  // Ensure off doesn't exceed buffer size
+  if (off > (int)sizeof(line)) off = (int)sizeof(line);
 
   // Check remaining user buffer space
   int remaining = bufsize - *writtenp;
@@ -813,16 +818,19 @@ ptree_walk(struct proc *node, int depth, pagetable_t pagetable, uint64 dst,
     *writtenp += off;
   }
 
-  // Now iterate children
-  // proc.lock assumed held
+  // Now iterate children, acquiring lock for each child
   struct proc *p;
   for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
     if (p->parent == node) {
-      // recurse: still holding proc.lock
+      release(&p->lock);
+      // recurse with proper locking
       if (ptree_walk(p, depth + 1, pagetable, dst, bufsize, writtenp) < 0)
         return -1;
       if (*writtenp >= bufsize) // buffer full, stop early
         return 0;
+    } else {
+      release(&p->lock);
     }
   }
 
