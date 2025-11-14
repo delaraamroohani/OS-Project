@@ -16,7 +16,7 @@ print_tree_recursive(struct proc_tree *tree, int index, char *prefix, int is_las
       printf("├─");  
     }
   }
-  printf("PID: %d\n", proc->pid);
+  printf(" PID: %d\n", proc->pid);
   
   // Build prefix for children
   char new_prefix[256];

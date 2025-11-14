@@ -305,17 +305,25 @@ kfork(void)
   return pid;
 }
 
-// Pass p's abandoned children to init.
+// Pass p's abandoned children to grandparent.
 // Caller must hold wait_lock.
 void
 reparent(struct proc *p)
 {
   struct proc *pp;
+  struct proc *new_parent;
 
+  if(p->parent != 0 && p->parent != initproc){
+    new_parent = p->parent;
+  } else {
+    new_parent = initproc;
+  }
+
+  // Reassign all of p's children to the new parent
   for(pp = proc; pp < &proc[NPROC]; pp++){
     if(pp->parent == p){
-      pp->parent = initproc;
-      wakeup(initproc);
+      pp->parent = new_parent;
+      wakeup(new_parent);
     }
   }
 }
