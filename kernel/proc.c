@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "minheap.h"
 
 struct cpu cpus[NCPU];
 
@@ -14,6 +15,11 @@ struct proc *initproc;
 
 int nextpid = 1;
 struct spinlock pid_lock;
+
+// CFS scheduler data structures
+struct minheap run_queue;        // Min-heap of runnable processes
+struct spinlock runq_lock;        // Lock for the run queue
+uint64 min_vruntime = 0;          // Global minimum vruntime
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
@@ -51,6 +57,12 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&runq_lock, "runqueue");
+  
+  // Initialize CFS run queue
+  minheap_init(&run_queue);
+  min_vruntime = 0;
+  
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
@@ -146,6 +158,10 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // Initialize CFS fields
+  p->vruntime = min_vruntime;
+  p->weight = 1024;  // Default weight (nice value 0)
+
   return p;
 }
 
@@ -227,6 +243,11 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  
+  // CFS: Add to run queue
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, p);
+  release(&runq_lock);
 
   release(&p->lock);
 }
@@ -300,6 +321,12 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  
+  // CFS: Add to run queue
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, np);
+  release(&runq_lock);
+  
   release(&np->lock);
 
   return pid;
@@ -425,7 +452,7 @@ kwait(uint64 addr)
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
-//  - choose a process to run.
+//  - choose a process to run (CFS: pick process with lowest vruntime).
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
@@ -445,8 +472,12 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
+    // CFS: Extract process with minimum vruntime from heap
+    acquire(&runq_lock);
+    p = minheap_extract_min(&run_queue);
+    release(&runq_lock);
+
+    if(p != 0) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
@@ -459,11 +490,9 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-        found = 1;
       }
       release(&p->lock);
-    }
-    if(found == 0) {
+    } else {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
@@ -503,7 +532,25 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  
+  // CFS: Update vruntime based on process weight
+  // vruntime += delta_exec * (NICE_0_WEIGHT / weight)
+  // Using simple increment for now (1024 is weight for nice 0)
+  p->vruntime += (1024 / p->weight);
+  
+  // Update global min_vruntime
+  acquire(&runq_lock);
+  if(p->vruntime > min_vruntime)
+    min_vruntime = p->vruntime;
+  release(&runq_lock);
+  
   p->state = RUNNABLE;
+  
+  // Add back to run queue
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, p);
+  release(&runq_lock);
+  
   sched();
   release(&p->lock);
 }
@@ -588,6 +635,15 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+        
+        // CFS: Add to run queue
+        // Set vruntime to at least min_vruntime to prevent starving other processes
+        if(p->vruntime < min_vruntime)
+          p->vruntime = min_vruntime;
+        
+        acquire(&runq_lock);
+        minheap_insert(&run_queue, p);
+        release(&runq_lock);
       }
       release(&p->lock);
     }
@@ -609,6 +665,14 @@ kkill(int pid)
       if(p->state == SLEEPING){
         // Wake process from sleep().
         p->state = RUNNABLE;
+        
+        // CFS: Add to run queue
+        if(p->vruntime < min_vruntime)
+          p->vruntime = min_vruntime;
+        
+        acquire(&runq_lock);
+        minheap_insert(&run_queue, p);
+        release(&runq_lock);
       }
       release(&p->lock);
       return 0;

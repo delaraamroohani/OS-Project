@@ -181,5 +181,11 @@ void            virtio_disk_init(void);
 void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
 
+// minheap.c
+struct minheap;
+void            minheap_init(struct minheap *);
+int             minheap_insert(struct minheap *, struct proc *);
+struct proc*    minheap_extract_min(struct minheap *);
+
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
