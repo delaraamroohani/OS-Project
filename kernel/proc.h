@@ -1,5 +1,3 @@
-#include "minheap.h"
-
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -120,13 +118,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-
-  int weight;                 
-  uint64 vruntime;
 };
 
-struct sched_queue {
-  struct minheap runnable_heap; // Min-heap of runnable processes
-  int nt_running;           // Number of running processes
-  int min_vruntime;         // Minimum vruntime among all processes
-};
