@@ -44,3 +44,6 @@ entry("pause");
 entry("uptime");
 entry("clcnt");
 entry("ptree");
+entry("cowfork");
+entry("physaddr");
+

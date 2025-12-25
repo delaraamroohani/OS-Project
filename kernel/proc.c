@@ -332,6 +332,63 @@ kfork(void)
   return pid;
 }
 
+// Create a new process using copy-on-write.
+// Sets up child kernel stack to return as if from fork() system call.
+int
+kcowfork(void)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  // Allocate process.
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+
+  // Share user memory from parent to child using COW.
+  if(uvmcopy_cow(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  np->sz = p->sz;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  // Cause fork to return 0 in the child.
+  np->trapframe->a0 = 0;
+
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  
+  // CFS: Add to run queue
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, np);
+  release(&runq_lock);
+  
+  release(&np->lock);
+
+  return pid;
+}
+
 // Pass p's abandoned children to grandparent.
 // Caller must hold wait_lock.
 void

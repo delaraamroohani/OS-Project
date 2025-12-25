@@ -44,6 +44,9 @@ int pause(int);
 int uptime(void);
 int clcnt(void);
 int ptree(int pid, struct proc_tree *tree);
+int cowfork(void);
+int physaddr(char *addr);
+
 
 // ulib.c
 int stat(const char*, struct stat*);
