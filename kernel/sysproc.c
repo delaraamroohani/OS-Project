@@ -143,3 +143,38 @@ sys_ptree(void)
 
   return 0;
 }
+
+// COW fork system call
+uint64
+sys_cowfork(void)
+{
+  return kcowfork();
+}
+
+// physaddr system call - returns the physical page number for a virtual address
+// If no argument, uses the process's stack pointer area
+uint64
+sys_physaddr(void)
+{
+  struct proc *p = myproc();
+  uint64 va;
+  pte_t *pte;
+  uint64 pa;
+
+  // Get virtual address from argument (if provided)
+  argaddr(0, &va);
+  
+  // If va is 0, use the stack pointer
+  if(va == 0)
+    va = p->trapframe->sp;
+  
+  va = PGROUNDDOWN(va);
+  
+  pte = walk(p->pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0)
+    return -1;
+  
+  pa = PTE2PA(*pte);
+  // Return page number (physical address divided by page size)
+  return pa / PGSIZE;
+}

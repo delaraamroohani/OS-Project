@@ -1,0 +1,553 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xepersian}
+
+\geometry{margin=2.5cm}
+\settextfont{XB Niloofar}
+\setlatintextfont{Times New Roman}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+\title{\textbf{گزارش پیاده‌سازی زمان‌بند CFS و COW Fork در xv6}}
+\author{دلارام روحانی - ۴۰۲۳۱۰۲۶ \\
+امیرعباس انتظاری - ۴۰۲۳۱۰۰۶}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Part 1: CFS Scheduler
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\part{پیاده‌سازی زمان‌بند CFS}
+
+\section{مقدمه به CFS}
+\textbf{\lr{Completely Fair Scheduler (CFS)}} یک الگوریتم زمان‌بندی است که در هسته لینوکس استفاده می‌شود. هدف اصلی CFS توزیع عادلانه زمان CPU بین تمام پردازه‌ها است.
+
+در xv6 اصلی، از یک الگوریتم ساده \lr{Round-Robin} استفاده می‌شود که هر پردازه را به نوبت اجرا می‌کند. این روش ساده است اما عادلانه نیست زیرا اولویت پردازه‌ها را در نظر نمی‌گیرد.
+
+\subsection{مفاهیم کلیدی CFS}
+\begin{itemize}
+    \item \textbf{\lr{vruntime (Virtual Runtime)}}: زمان مجازی اجرای هر پردازه. پردازه‌ای که کمتر اجرا شده، \lr{vruntime} کمتری دارد.
+    \item \textbf{\lr{Weight}}: وزن هر پردازه بر اساس اولویت. پردازه‌های مهم‌تر وزن بیشتری دارند.
+    \item \textbf{\lr{Min-Heap}}: برای انتخاب سریع پردازه با کمترین \lr{vruntime} از یک \lr{Min-Heap} استفاده می‌شود.
+\end{itemize}
+
+\section{اهداف پیاده‌سازی CFS}
+\begin{itemize}
+    \item جایگزینی زمان‌بند \lr{Round-Robin} با CFS
+    \item پیاده‌سازی ساختار داده \lr{Min-Heap} برای مدیریت صف اجرا
+    \item اضافه کردن فیلدهای \lr{vruntime} و \lr{weight} به ساختار پردازه
+    \item به‌روزرسانی \lr{vruntime} در هر بار \lr{yield}
+\end{itemize}
+
+\section{جزئیات پیاده‌سازی CFS}
+
+\subsection{تغییرات در ساختار پردازه (proc.h)}
+دو فیلد جدید به ساختار \lr{proc} اضافه شد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={فیلدهای جدید در struct proc}]
+struct proc {
+  // ... existing fields ...
+  
+  int weight;        // Process weight (based on priority)
+  uint64 vruntime;   // Virtual runtime for CFS
+};
+\end{lstlisting}
+\end{latin}
+
+\begin{itemize}
+    \item \lr{weight}: وزن پردازه. مقدار پیش‌فرض ۱۰۲۴ (مطابق با \lr{nice=0} در لینوکس).
+    \item \lr{vruntime}: زمان مجازی اجرا. پردازه با کمترین \lr{vruntime} اولویت بالاتری برای اجرا دارد.
+\end{itemize}
+
+\subsection{ساختار \lr{Min-Heap (minheap.h و minheap.c)}}
+یک \lr{Min-Heap} برای نگهداری پردازه‌های آماده اجرا پیاده‌سازی شد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={ساختار Min-Heap}]
+struct minheap {
+  struct proc *procs[NPROC];  // Array of process pointers
+  int size;                   // Current number of elements
+  int capacity;               // Maximum capacity (NPROC)
+};
+\end{lstlisting}
+\end{latin}
+
+توابع اصلی:
+\begin{itemize}
+    \item \lr{minheap\_init()}: مقداردهی اولیه heap
+    \item \lr{minheap\_insert()}: اضافه کردن پردازه به heap
+    \item \lr{minheap\_extract\_min()}: استخراج پردازه با کمترین \lr{vruntime}
+\end{itemize}
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع heapify\_up}]
+static void heapify_up(struct minheap *heap, int idx) {
+  while (idx > 0) {
+    int p = parent(idx);
+    if (heap->procs[idx]->vruntime < heap->procs[p]->vruntime) {
+      swap(heap, idx, p);
+      idx = p;
+    } else {
+      break;
+    }
+  }
+}
+\end{lstlisting}
+\end{latin}
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع extract\_min}]
+struct proc* minheap_extract_min(struct minheap *heap) {
+  if (heap->size == 0) return 0;
+  
+  struct proc *min_proc = heap->procs[0];
+  
+  // Move last element to root
+  heap->procs[0] = heap->procs[heap->size - 1];
+  heap->size--;
+  
+  // Heapify down from root
+  if (heap->size > 0) {
+    heapify_down(heap, 0);
+  }
+  
+  return min_proc;
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{متغیرهای سراسری \lr{CFS (proc.c)}}
+در فایل \lr{proc.c} متغیرهای سراسری زیر اضافه شد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={متغیرهای سراسری CFS}]
+// CFS scheduler data structures
+struct minheap run_queue;     // Min-heap of runnable processes
+struct spinlock runq_lock;    // Lock for the run queue
+uint64 min_vruntime = 0;      // Global minimum vruntime
+\end{lstlisting}
+\end{latin}
+
+\subsection{مقداردهی اولیه (procinit)}
+در تابع \lr{procinit()} قفل و heap مقداردهی اولیه می‌شوند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={مقداردهی اولیه CFS}]
+void procinit(void) {
+  initlock(&runq_lock, "runqueue");
+  minheap_init(&run_queue);
+  min_vruntime = 0;
+  // ...
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{تخصیص پردازه (allocproc)}
+هنگام ایجاد پردازه جدید، فیلدهای CFS مقداردهی می‌شوند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={مقداردهی فیلدهای CFS در allocproc}]
+static struct proc* allocproc(void) {
+  // ...
+  
+  // Initialize CFS fields
+  p->vruntime = min_vruntime;  // Start with current min
+  p->weight = 1024;            // Default weight (nice 0)
+  
+  return p;
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{زمان‌بند جدید (scheduler)}
+تابع \lr{scheduler()} بازنویسی شد تا از CFS استفاده کند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={زمان‌بند CFS}]
+void scheduler(void) {
+  struct proc *p;
+  struct cpu *c = mycpu();
+  c->proc = 0;
+  
+  for(;;){
+    intr_on();
+    intr_off();
+
+    // CFS: Extract process with minimum vruntime
+    acquire(&runq_lock);
+    p = minheap_extract_min(&run_queue);
+    release(&runq_lock);
+
+    if(p != 0) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+        c->proc = 0;
+      }
+      release(&p->lock);
+    } else {
+      asm volatile("wfi");  // Wait for interrupt
+    }
+  }
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{به‌روزرسانی \lr{vruntime (yield)}}
+در تابع \lr{yield()}، \lr{vruntime} پردازه به‌روز می‌شود:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={به‌روزرسانی vruntime در yield}]
+void yield(void) {
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  
+  // CFS: Update vruntime based on weight
+  // vruntime += delta * (NICE_0_WEIGHT / weight)
+  p->vruntime += (1024 / p->weight);
+  
+  // Update global min_vruntime
+  acquire(&runq_lock);
+  if(p->vruntime > min_vruntime)
+    min_vruntime = p->vruntime;
+  release(&runq_lock);
+  
+  p->state = RUNNABLE;
+  
+  // Add back to run queue
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, p);
+  release(&runq_lock);
+  
+  sched();
+  release(&p->lock);
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{اضافه کردن پردازه به صف \lr{(fork و wakeup)}}
+در توابع \lr{fork()} و \lr{wakeup()}، پردازه‌ها به \lr{run\_queue} اضافه می‌شوند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={اضافه کردن به صف اجرا}]
+// In fork:
+np->state = RUNNABLE;
+acquire(&runq_lock);
+minheap_insert(&run_queue, np);
+release(&runq_lock);
+\end{lstlisting}
+\end{latin}
+
+\section{فرمول محاسبه vruntime}
+فرمول به‌روزرسانی \lr{vruntime} به صورت زیر است:
+
+\begin{equation}
+vruntime_{new} = vruntime_{old} + \frac{NICE\_0\_WEIGHT}{weight} \times \Delta t
+\end{equation}
+
+که در آن:
+\begin{itemize}
+    \item \lr{NICE\_0\_WEIGHT = 1024}: وزن پیش‌فرض
+    \item \lr{weight}: وزن پردازه فعلی
+    \item $\Delta t$: زمان اجرا (در پیاده‌سازی ساده برابر ۱)
+\end{itemize}
+
+\section{نتیجه‌گیری CFS}
+با پیاده‌سازی CFS:
+\begin{itemize}
+    \item پردازه‌هایی که کمتر اجرا شده‌اند، اولویت بالاتری می‌گیرند
+    \item پردازه‌های با وزن بالاتر، \lr{vruntime} کمتری افزایش می‌یابد (زمان بیشتری می‌گیرند)
+    \item انتخاب پردازه بعدی با پیچیدگی $O(\log n)$ انجام می‌شود
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Part 2: COW Fork
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\part{پیاده‌سازی \lr{COW Fork}}
+
+\section{مقدمه به COW}
+در سیستم‌عامل، زمانی که فراخوانی سیستمی \lr{fork()} اجرا می‌شود، یک کپی کامل از فضای آدرس پردازه والد برای پردازه فرزند ایجاد می‌شود. این روش سنتی باعث اتلاف حافظه و زمان می‌شود، به‌خصوص زمانی که فرزند بلافاصله \lr{exec()} را فراخوانی کند.
+
+\textbf{\lr{Copy-on-Write (COW)}} یک تکنیک بهینه‌سازی است که در آن صفحات حافظه بین والد و فرزند به اشتراک گذاشته می‌شوند تا زمانی که یکی از آن‌ها بخواهد بنویسد. در آن لحظه، یک کپی از صفحه ایجاد می‌شود.
+
+\section{اهداف پیاده‌سازی COW}
+\begin{itemize}
+    \item پیاده‌سازی \lr{cowfork()} که صفحات را به جای کپی کردن، به اشتراک می‌گذارد
+    \item مدیریت \lr{Page Fault} برای تشخیص نوشتن روی صفحات COW
+    \item پیاده‌سازی شمارش ارجاع (\lr{Reference Counting}) برای صفحات فیزیکی
+    \item اضافه کردن سیستم‌کال \lr{physaddr()} برای تست صحت پیاده‌سازی
+\end{itemize}
+
+\section{جزئیات پیاده‌سازی}
+
+\subsection{اضافه کردن بیت COW به PTE}
+برای تشخیص صفحات COW از صفحات فقط‌خواندنی معمولی، یک بیت جدید به فلگ‌های PTE اضافه کردیم. از بیت \lr{RSW (Reserved for Software)} استفاده شد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تعریف بیت COW در riscv.h}]
+#define PTE_V (1L << 0) // valid
+#define PTE_R (1L << 1)
+#define PTE_W (1L << 2)
+#define PTE_X (1L << 3)
+#define PTE_U (1L << 4) // user can access
+#define PTE_COW (1L << 8) // copy-on-write page (RSW bit)
+\end{lstlisting}
+\end{latin}
+
+\subsection{پیاده‌سازی شمارش ارجاع در kalloc.c}
+برای مدیریت صحیح حافظه مشترک، یک آرایه برای نگهداری تعداد ارجاعات هر صفحه فیزیکی اضافه شد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={ساختار شمارش ارجاع}]
+#define MAXPAGES 32768
+#define PA2IDX(pa) (((uint64)(pa) - KERNBASE) / PGSIZE)
+
+struct {
+  struct spinlock lock;
+  int count[MAXPAGES];
+} pageref;
+\end{lstlisting}
+\end{latin}
+
+سه تابع برای مدیریت ارجاعات اضافه شد:
+\begin{itemize}
+    \item \lr{kref\_incr(pa)}: افزایش شمارنده ارجاع
+    \item \lr{kref\_decr(pa)}: کاهش شمارنده ارجاع
+    \item \lr{kref\_get(pa)}: خواندن مقدار شمارنده
+\end{itemize}
+
+همچنین تابع \lr{kfree()} اصلاح شد تا فقط زمانی صفحه را آزاد کند که شمارنده به صفر برسد:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع kfree اصلاح‌شده}]
+void kfree(void *pa) {
+  // Only free if reference count reaches 0
+  acquire(&pageref.lock);
+  if(pageref.count[PA2IDX(pa)] > 1) {
+    pageref.count[PA2IDX(pa)]--;
+    release(&pageref.lock);
+    return;  // Don't free, still referenced
+  }
+  pageref.count[PA2IDX(pa)] = 0;
+  release(&pageref.lock);
+  // ... rest of kfree
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{پیاده‌سازی uvmcopy\_cow در vm.c}
+این تابع جایگزین \lr{uvmcopy} در \lr{cowfork} می‌شود. به جای کپی کردن صفحات:
+\begin{enumerate}
+    \item صفحات را فقط‌خواندنی می‌کند
+    \item بیت COW را ست می‌کند
+    \item هر دو جدول صفحه (والد و فرزند) را به یک صفحه فیزیکی نگاشت می‌کند
+    \item شمارنده ارجاع را افزایش می‌دهد
+\end{enumerate}
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع uvmcopy\_cow}]
+int uvmcopy_cow(pagetable_t old, pagetable_t new, uint64 sz) {
+  for(i = 0; i < sz; i += PGSIZE){
+    // ... get PTE and physical address
+    
+    // If writable, mark as COW and remove write permission
+    if(flags & PTE_W) {
+      flags = (flags & ~PTE_W) | PTE_COW;
+      *pte = PA2PTE(pa) | flags | PTE_V;  // Update parent
+    }
+    
+    // Map same physical page in child
+    mappages(new, i, PGSIZE, pa, flags);
+    
+    // Increment reference count
+    kref_incr((void*)pa);
+  }
+  return 0;
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{مدیریت \lr{Page Fault} در \lr{trap.c}}
+وقتی پردازه‌ای روی صفحه COW می‌نویسد، یک \lr{Store Page Fault} با \lr{scause=15} رخ می‌دهد. در \lr{usertrap()} این را مدیریت می‌کنیم:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={مدیریت Page Fault در usertrap}]
+} else if(r_scause() == 15) {
+  uint64 va = r_stval();
+  pte_t *pte = walk(p->pagetable, va, 0);
+  
+  // Check if it's a COW page fault
+  if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)) {
+    if(cowfault(p->pagetable, va) < 0) {
+      setkilled(p);
+    }
+  } else if(vmfault(p->pagetable, va, 0) == 0) {
+    setkilled(p);
+  }
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{تابع cowfault}
+این تابع مسئول رسیدگی به خطای COW است:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع cowfault}]
+int cowfault(pagetable_t pagetable, uint64 va) {
+  va = PGROUNDDOWN(va);
+  pte_t *pte = walk(pagetable, va, 0);
+  
+  // Check if COW page
+  if((*pte & PTE_COW) == 0) return -1;
+  
+  uint64 pa = PTE2PA(*pte);
+  
+  // If only one reference, just restore write permission
+  if(kref_get((void*)pa) == 1) {
+    *pte = (*pte | PTE_W) & ~PTE_COW;
+    return 0;
+  }
+  
+  // Allocate new page and copy content
+  char *mem = kalloc();
+  memmove(mem, (char*)pa, PGSIZE);
+  
+  // Update PTE with new page, restore write, clear COW
+  uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+  *pte = PA2PTE(mem) | flags | PTE_V;
+  
+  // Decrement reference on old page
+  kfree((void*)pa);
+  
+  return 0;
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{سیستم‌کال cowfork}
+تابع \lr{kcowfork()} در \lr{proc.c} مشابه \lr{kfork()} است، با این تفاوت که از \lr{uvmcopy\_cow()} استفاده می‌کند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={تابع kcowfork}]
+int kcowfork(void) {
+  // Allocate process
+  if((np = allocproc()) == 0) return -1;
+
+  // Share user memory using COW (not copy!)
+  if(uvmcopy_cow(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    return -1;
+  }
+  // ... rest same as kfork
+}
+\end{lstlisting}
+\end{latin}
+
+\subsection{سیستم‌کال physaddr}
+برای تست صحت پیاده‌سازی، این سیستم‌کال شماره صفحه فیزیکی یک آدرس مجازی را برمی‌گرداند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={سیستم‌کال physaddr}]
+uint64 sys_physaddr(void) {
+  struct proc *p = myproc();
+  uint64 va;
+  argaddr(0, &va);
+  
+  va = PGROUNDDOWN(va);
+  pte_t *pte = walk(p->pagetable, va, 0);
+  uint64 pa = PTE2PA(*pte);
+  
+  return pa / PGSIZE;  // Return page number
+}
+\end{lstlisting}
+\end{latin}
+
+\section{ثبت سیستم‌کال‌ها}
+دو سیستم‌کال جدید به فایل‌های زیر اضافه شد:
+\begin{itemize}
+    \item \lr{syscall.h}: تعریف \lr{SYS\_cowfork=24} و \lr{SYS\_physaddr=25}
+    \item \lr{syscall.c}: ثبت توابع handler
+    \item \lr{usys.pl}: تولید stub‌های سمت کاربر
+    \item \lr{user.h}: اعلان توابع برای برنامه‌های کاربر
+\end{itemize}
+
+\section{برنامه تست}
+برنامه \lr{cowtest.c} صحت پیاده‌سازی را بررسی می‌کند:
+
+\begin{latin}
+\begin{lstlisting}[language=C, caption={برنامه تست COW}]
+int main() {
+  char *buf = malloc(4096);
+  buf[0] = 'A';
+  
+  int parent_page_before = physaddr(buf);
+  
+  if(cowfork() == 0) {
+    // Child
+    int child_page_before = physaddr(buf);
+    buf[0] = 'C';  // Triggers COW!
+    int child_page_after = physaddr(buf);
+    
+    // child_page_before == child_page_after means COW failed
+    // child_page_before != child_page_after means COW worked
+  }
+  
+  wait(0);
+  // Parent's buf[0] should still be 'A'
+}
+\end{lstlisting}
+\end{latin}
+
+\section{نتیجه‌گیری COW}
+پیاده‌سازی \lr{COW Fork} با موفقیت انجام شد. خروجی مورد انتظار:
+\begin{itemize}
+    \item قبل از نوشتن: شماره صفحه والد و فرزند یکسان است (اشتراک‌گذاری)
+    \item بعد از نوشتن توسط فرزند: شماره صفحه فرزند تغییر می‌کند (کپی شده)
+    \item داده والد تغییر نمی‌کند (ایزوله‌سازی صحیح)
+\end{itemize}
+
+این پیاده‌سازی باعث صرفه‌جویی قابل توجه در حافظه و زمان می‌شود، به‌خصوص در سناریوهای \lr{fork+exec}.
+
+\end{document}

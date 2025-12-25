@@ -103,6 +103,8 @@ extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_clcnt(void);
 extern uint64 sys_ptree(void);
+extern uint64 sys_cowfork(void);
+extern uint64 sys_physaddr(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -130,6 +132,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_clcnt]   sys_clcnt,
 [SYS_ptree]   sys_ptree,
+[SYS_cowfork] sys_cowfork,
+[SYS_physaddr] sys_physaddr,
 };
 
 uint sysclcnt = 0;

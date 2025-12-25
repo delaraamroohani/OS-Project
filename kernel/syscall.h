@@ -22,3 +22,5 @@
 #define SYS_close  21
 #define SYS_clcnt  22
 #define SYS_ptree  23
+#define SYS_cowfork 24
+#define SYS_physaddr 25

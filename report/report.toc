@@ -1,0 +1,29 @@
+\contentsline {part}{اول\hspace {1em}پیاده‌سازی زمان‌بند CFS}{3}{part.1}%
+\contentsline {section}{\numberline {1}مقدمه به CFS}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}مفاهیم کلیدی CFS}{3}{subsection.1.1}%
+\contentsline {section}{\numberline {2}اهداف پیاده‌سازی CFS}{3}{section.2}%
+\contentsline {section}{\numberline {3}جزئیات پیاده‌سازی CFS}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}تغییرات در ساختار پردازه (proc.h)}{3}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}ساختار \lr {Min-Heap (minheap.h و minheap.c)}}{4}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}متغیرهای سراسری \lr {CFS (proc.c)}}{4}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}مقداردهی اولیه (procinit)}{5}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}تخصیص پردازه (allocproc)}{5}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}زمان‌بند جدید (scheduler)}{5}{subsection.3.6}%
+\contentsline {subsection}{\numberline {3.7}به‌روزرسانی \lr {vruntime (yield)}}{6}{subsection.3.7}%
+\contentsline {subsection}{\numberline {3.8}اضافه کردن پردازه به صف \lr {(fork و wakeup)}}{6}{subsection.3.8}%
+\contentsline {section}{\numberline {4}فرمول محاسبه vruntime}{7}{section.4}%
+\contentsline {section}{\numberline {5}نتیجه‌گیری CFS}{7}{section.5}%
+\contentsline {part}{دوم\hspace {1em}پیاده‌سازی \lr {COW Fork}}{8}{part.2}%
+\contentsline {section}{\numberline {6}مقدمه به COW}{8}{section.6}%
+\contentsline {section}{\numberline {7}اهداف پیاده‌سازی COW}{8}{section.7}%
+\contentsline {section}{\numberline {8}جزئیات پیاده‌سازی}{8}{section.8}%
+\contentsline {subsection}{\numberline {8.1}اضافه کردن بیت COW به PTE}{8}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}پیاده‌سازی شمارش ارجاع در kalloc.c}{8}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}پیاده‌سازی uvmcopy\_cow در vm.c}{9}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}مدیریت \lr {Page Fault} در \lr {trap.c}}{10}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}تابع cowfault}{10}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.6}سیستم‌کال cowfork}{11}{subsection.8.6}%
+\contentsline {subsection}{\numberline {8.7}سیستم‌کال physaddr}{11}{subsection.8.7}%
+\contentsline {section}{\numberline {9}ثبت سیستم‌کال‌ها}{11}{section.9}%
+\contentsline {section}{\numberline {10}برنامه تست}{11}{section.10}%
+\contentsline {section}{\numberline {11}نتیجه‌گیری COW}{12}{section.11}%

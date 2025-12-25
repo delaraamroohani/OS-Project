@@ -68,9 +68,25 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
+  } else if(r_scause() == 15) {
+    // Store page fault - could be COW or lazy allocation
+    uint64 va = r_stval();
+    pte_t *pte = walk(p->pagetable, va, 0);
+    
+    // First check if it's a COW page fault
+    if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)) {
+      // COW page fault
+      if(cowfault(p->pagetable, va) < 0) {
+        printf("usertrap(): COW fault failed for va=0x%lx pid=%d\n", va, p->pid);
+        setkilled(p);
+      }
+    } else if(vmfault(p->pagetable, va, 0) == 0) {
+      // Lazy allocation failed
+      printf("usertrap(): page fault failed for va=0x%lx pid=%d\n", va, p->pid);
+      setkilled(p);
+    }
+  } else if(r_scause() == 13 && vmfault(p->pagetable, r_stval(), 1) != 0) {
+    // Load page fault on lazily-allocated page
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());

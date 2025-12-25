@@ -323,6 +323,48 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+// Given a parent process's page table, share
+// its memory with a child's page table using COW.
+// Maps pages as read-only with COW bit set.
+// returns 0 on success, -1 on failure.
+int
+uvmcopy_cow(pagetable_t old, pagetable_t new, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      continue;   // page table entry hasn't been allocated
+    if((*pte & PTE_V) == 0)
+      continue;   // physical page hasn't been allocated
+    
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    
+    // If the page is writable, mark it as COW and remove write permission
+    if(flags & PTE_W) {
+      flags = (flags & ~PTE_W) | PTE_COW;
+      // Update parent's PTE to also be read-only with COW bit
+      *pte = PA2PTE(pa) | flags | PTE_V;
+    }
+    
+    // Map same physical page in child's page table
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      goto err;
+    }
+    
+    // Increment reference count for this physical page
+    kref_incr((void*)pa);
+  }
+  return 0;
+
+ err:
+  uvmunmap(new, 0, i / PGSIZE, 1);
+  return -1;
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -358,7 +400,15 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     }
 
     pte = walk(pagetable, va0, 0);
-    // forbid copyout over read-only user text pages.
+    // Handle COW pages - if this is a COW page, copy it first
+    if((*pte & PTE_COW) != 0) {
+      if(cowfault(pagetable, va0) < 0) {
+        return -1;
+      }
+      // Re-read physical address after COW handling
+      pa0 = PTE2PA(*pte);
+    }
+    // forbid copyout over read-only user text pages (non-COW read-only).
     if((*pte & PTE_W) == 0)
       return -1;
       
@@ -470,6 +520,60 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     return 0;
   }
   return mem;
+}
+
+// Handle COW page fault.
+// Allocates a new page, copies the content, and updates the page table.
+// Returns 0 on success, -1 on failure.
+int
+cowfault(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa, flags;
+  char *mem;
+
+  va = PGROUNDDOWN(va);
+  
+  // Get the PTE for this virtual address
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return -1;
+  if((*pte & PTE_V) == 0)
+    return -1;
+  if((*pte & PTE_U) == 0)
+    return -1;
+  
+  // Check if this is a COW page
+  if((*pte & PTE_COW) == 0)
+    return -1;
+  
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  
+  // If this is the only reference, just restore write permission
+  if(kref_get((void*)pa) == 1) {
+    *pte = (*pte | PTE_W) & ~PTE_COW;
+    return 0;
+  }
+  
+  // Allocate a new page
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+  
+  // Copy the content
+  memmove(mem, (char*)pa, PGSIZE);
+  
+  // Update flags: restore write permission, remove COW bit
+  flags = (flags | PTE_W) & ~PTE_COW;
+  
+  // Update the PTE to point to the new page
+  *pte = PA2PTE(mem) | flags | PTE_V;
+  
+  // Decrement reference count on old page (may free it)
+  kfree((void*)pa);
+  
+  return 0;
 }
 
 int
