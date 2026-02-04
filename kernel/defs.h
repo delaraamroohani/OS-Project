@@ -195,3 +195,6 @@ struct proc*    minheap_extract_min(struct minheap *);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+void create_kernel_process(const char *name, void (*entrypoint)(void));
+

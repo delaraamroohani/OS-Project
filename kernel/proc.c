@@ -136,6 +136,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->is_kproc = 0;
+  p->kentry = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -185,6 +187,9 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->is_kproc = 0;
+  p->kentry = 0;
+
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -612,6 +617,15 @@ yield(void)
   release(&p->lock);
 }
 
+static void
+swapd(void)
+{
+  for(;;){
+    printf("swapd: alive\n");
+    yield();
+  }
+}
+
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
 void
@@ -624,11 +638,15 @@ forkret(void)
   // Still holding p->lock from scheduler.
   release(&p->lock);
 
+  extern void swapd(void); // or static in proc.c
+
   if (first) {
     // File system initialization must be run in the context of a
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
     fsinit(ROOTDEV);
+
+    create_kernel_process("swapd", swapd);
 
     first = 0;
     // ensure other cores see first=0.
@@ -648,6 +666,25 @@ forkret(void)
   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
   ((void (*)(uint64))trampoline_userret)(satp);
 }
+
+static void
+kproc_start(void)
+{
+  struct proc *p = myproc();
+
+  // We arrive here still holding p->lock (scheduler acquired it).
+  release(&p->lock);
+
+  intr_on(); // safe; also prevents deadlock-like “everything off”
+
+  if(p->kentry)
+    p->kentry();
+
+  // If entrypoint ever returns, don't fall off into nowhere.
+  for(;;)
+    yield();
+}
+
 
 // Sleep on channel chan, releasing condition lock lk.
 // Re-acquires lk when awakened.
@@ -881,4 +918,41 @@ ptree(int rootpid, struct proc_tree *tree)
 
   return 0; // Success
 }
+
+void
+create_kernel_process(const char *name, void (*entrypoint)(void))
+{
+  struct proc *p = allocproc();
+  if(p == 0)
+    panic("create_kernel_process: allocproc failed");
+
+  // Mark as kernel process + store entrypoint
+  p->is_kproc = 1;
+  p->kentry = entrypoint;
+
+  // Give it a name
+  safestrcpy(p->name, name, sizeof(p->name));
+
+  // IMPORTANT: make it start in kernel at kproc_start, not forkret
+  memset(&p->context, 0, sizeof(p->context));
+  p->context.ra = (uint64)kproc_start;
+  p->context.sp = p->kstack + PGSIZE;
+
+  // CFS fields: start at current minimum to avoid unfairness
+  acquire(&runq_lock);
+  p->vruntime = min_vruntime;
+  release(&runq_lock);
+  p->weight = 1024;
+
+  // Make runnable + insert into CFS runqueue (your scheduler uses heap)
+  p->state = RUNNABLE;
+
+  acquire(&runq_lock);
+  minheap_insert(&run_queue, p);
+  release(&runq_lock);
+
+  release(&p->lock);
+}
+
+
 

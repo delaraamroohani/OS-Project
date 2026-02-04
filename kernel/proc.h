@@ -123,6 +123,9 @@ struct proc {
 
   int weight;                 
   uint64 vruntime;
+
+  int is_kproc;
+  void (*kentry)(void);
 };
 
 struct sched_queue {
