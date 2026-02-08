@@ -920,15 +920,6 @@ yield(void)
   release(&p->lock);
 }
 
-static void
-swapd(void)
-{
-  // Quietly yield control to other processes
-  for(;;){
-    yield();
-  }
-}
-
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
 void
