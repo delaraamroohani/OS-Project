@@ -24,3 +24,9 @@
 #define SYS_ptree  23
 #define SYS_cowfork 24
 #define SYS_physaddr 25
+#define SYS_get_pid 26
+#define SYS_set_pid_namespace 27
+#define SYS_get_pid_namespace 28
+#define SYS_getHostname 29
+#define SYS_setHostname 30
+#define SYS_unshare 31

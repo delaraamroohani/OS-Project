@@ -1,4 +1,10 @@
 #include "minheap.h"
+#include "spinlock.h"
+#include "pid_namespace.h"
+#include "mount_namespace.h"
+#include "uts_namespace.h"
+#include "ipc_namespace.h"
+#include "ns_flags.h"
 
 // Saved registers for kernel context switches.
 struct context {
@@ -126,6 +132,11 @@ struct proc {
 
   int is_kproc;
   void (*kentry)(void);
+
+  struct pid_namespace *pid_ns;      // PID namespace
+  struct mount_namespace *mnt_ns;    // Mount namespace
+  struct uts_namespace *uts_ns;      // UTS namespace (hostname)
+  struct ipc_namespace *ipc_ns;      // IPC namespace
 };
 
 struct sched_queue {

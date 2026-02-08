@@ -106,6 +106,27 @@ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 
+// PID namespace functions
+struct pid_namespace* pid_namespace_alloc(void);
+int             pid_namespace_get_pid(struct pid_namespace *);
+void            pid_namespace_get(struct pid_namespace *);
+void            pid_namespace_put(struct pid_namespace *);
+
+// Mount namespace functions
+struct mount_namespace* mount_namespace_alloc(struct inode *);
+void            mount_namespace_get(struct mount_namespace *);
+void            mount_namespace_put(struct mount_namespace *);
+
+// UTS namespace functions
+struct uts_namespace* uts_namespace_alloc(void);
+void            uts_namespace_get(struct uts_namespace *);
+void            uts_namespace_put(struct uts_namespace *);
+
+// IPC namespace functions
+struct ipc_namespace* ipc_namespace_alloc(void);
+void            ipc_namespace_get(struct ipc_namespace *);
+void            ipc_namespace_put(struct ipc_namespace *);
+
 // swtch.S
 void            swtch(struct context*, struct context*);
 

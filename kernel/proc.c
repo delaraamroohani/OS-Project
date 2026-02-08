@@ -6,6 +6,11 @@
 #include "proc.h"
 #include "defs.h"
 #include "minheap.h"
+#include "pid_namespace.h"
+#include "mount_namespace.h"
+#include "uts_namespace.h"
+#include "ipc_namespace.h"
+#include "ns_flags.h"
 
 struct cpu cpus[NCPU];
 
@@ -114,6 +119,205 @@ allocpid()
   return pid;
 }
 
+// Allocate a new PID namespace
+struct pid_namespace*
+pid_namespace_alloc()
+{
+  struct pid_namespace *ns;
+  
+  ns = (struct pid_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcount = 1;
+  ns->next_pid = 1;
+  initlock(&ns->lock, "pid_ns");
+  
+  return ns;
+}
+
+// Get next PID from namespace
+int
+pid_namespace_get_pid(struct pid_namespace *ns)
+{
+  int pid;
+  
+  if(ns == 0)
+    return -1;
+    
+  acquire(&ns->lock);
+  pid = ns->next_pid;
+  ns->next_pid = ns->next_pid + 1;
+  release(&ns->lock);
+  
+  return pid;
+}
+
+// Increment reference count
+void
+pid_namespace_get(struct pid_namespace *ns)
+{
+  if(ns == 0)
+    return;
+    
+  acquire(&ns->lock);
+  ns->refcount++;
+  release(&ns->lock);
+}
+
+// Decrement reference count and free if zero
+void
+pid_namespace_put(struct pid_namespace *ns)
+{
+  if(ns == 0)
+    return;
+    
+  acquire(&ns->lock);
+  ns->refcount--;
+  int refcount = ns->refcount;
+  release(&ns->lock);
+  
+  if(refcount == 0) {
+    kfree((void *)ns);
+  }
+}
+
+// ============ Mount Namespace Functions ============
+
+struct mount_namespace*
+mount_namespace_alloc(struct inode *root)
+{
+  struct mount_namespace *ns;
+  
+  ns = (struct mount_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  ns->root = root;
+  initlock(&ns->lock, "mount_ns");
+  
+  return ns;
+}
+
+void
+mount_namespace_get(struct mount_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+
+void
+mount_namespace_put(struct mount_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt--;
+  int refcnt = ns->refcnt;
+  release(&ns->lock);
+  
+  if(refcnt == 0) {
+    if(ns->root)
+      iput(ns->root);
+    kfree((void *)ns);
+  }
+}
+
+// ============ UTS Namespace Functions ============
+
+struct uts_namespace*
+uts_namespace_alloc(void)
+{
+  struct uts_namespace *ns;
+  
+  ns = (struct uts_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  memset(ns->hostname, 0, HOSTNAME_LEN);
+  initlock(&ns->lock, "uts_ns");
+  
+  return ns;
+}
+
+void
+uts_namespace_get(struct uts_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+
+void
+uts_namespace_put(struct uts_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt--;
+  int refcnt = ns->refcnt;
+  release(&ns->lock);
+  
+  if(refcnt == 0) {
+    kfree((void *)ns);
+  }
+}
+
+// ============ IPC Namespace Functions ============
+
+struct ipc_namespace*
+ipc_namespace_alloc(void)
+{
+  struct ipc_namespace *ns;
+  
+  ns = (struct ipc_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  initlock(&ns->lock, "ipc_ns");
+  
+  return ns;
+}
+
+void
+ipc_namespace_get(struct ipc_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+
+void
+ipc_namespace_put(struct ipc_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  
+  acquire(&ns->lock);
+  ns->refcnt--;
+  int refcnt = ns->refcnt;
+  release(&ns->lock);
+  
+  if(refcnt == 0) {
+    kfree((void *)ns);
+  }
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -138,6 +342,38 @@ found:
   p->state = USED;
   p->is_kproc = 0;
   p->kentry = 0;
+
+  // Allocate a PID namespace for this process
+  p->pid_ns = pid_namespace_alloc();
+  if(p->pid_ns == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate a Mount namespace for this process
+  p->mnt_ns = mount_namespace_alloc(0);
+  if(p->mnt_ns == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate a UTS namespace for this process
+  p->uts_ns = uts_namespace_alloc();
+  if(p->uts_ns == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate an IPC namespace for this process
+  p->ipc_ns = ipc_namespace_alloc();
+  if(p->ipc_ns == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -189,6 +425,27 @@ freeproc(struct proc *p)
   p->state = UNUSED;
   p->is_kproc = 0;
   p->kentry = 0;
+  
+  // Release all namespaces
+  if(p->pid_ns) {
+    pid_namespace_put(p->pid_ns);
+    p->pid_ns = 0;
+  }
+  
+  if(p->mnt_ns) {
+    mount_namespace_put(p->mnt_ns);
+    p->mnt_ns = 0;
+  }
+  
+  if(p->uts_ns) {
+    uts_namespace_put(p->uts_ns);
+    p->uts_ns = 0;
+  }
+  
+  if(p->ipc_ns) {
+    ipc_namespace_put(p->ipc_ns);
+    p->ipc_ns = 0;
+  }
 
 }
 
@@ -294,6 +551,29 @@ kfork(void)
     return -1;
   }
 
+  // Child inherits parent's namespaces
+  // Release newly allocated ones and share parent's
+  
+  // PID namespace
+  pid_namespace_put(np->pid_ns);
+  np->pid_ns = p->pid_ns;
+  pid_namespace_get(np->pid_ns);
+  
+  // Mount namespace
+  mount_namespace_put(np->mnt_ns);
+  np->mnt_ns = p->mnt_ns;
+  mount_namespace_get(np->mnt_ns);
+  
+  // UTS namespace
+  uts_namespace_put(np->uts_ns);
+  np->uts_ns = p->uts_ns;
+  uts_namespace_get(np->uts_ns);
+  
+  // IPC namespace
+  ipc_namespace_put(np->ipc_ns);
+  np->ipc_ns = p->ipc_ns;
+  ipc_namespace_get(np->ipc_ns);
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -350,6 +630,29 @@ kcowfork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
+
+  // Child inherits parent's namespaces
+  // Release newly allocated ones and share parent's
+  
+  // PID namespace
+  pid_namespace_put(np->pid_ns);
+  np->pid_ns = p->pid_ns;
+  pid_namespace_get(np->pid_ns);
+  
+  // Mount namespace
+  mount_namespace_put(np->mnt_ns);
+  np->mnt_ns = p->mnt_ns;
+  mount_namespace_get(np->mnt_ns);
+  
+  // UTS namespace
+  uts_namespace_put(np->uts_ns);
+  np->uts_ns = p->uts_ns;
+  uts_namespace_get(np->uts_ns);
+  
+  // IPC namespace
+  ipc_namespace_put(np->ipc_ns);
+  np->ipc_ns = p->ipc_ns;
+  ipc_namespace_get(np->ipc_ns);
 
   // Share user memory from parent to child using COW.
   if(uvmcopy_cow(p->pagetable, np->pagetable, p->sz) < 0){
@@ -620,7 +923,7 @@ yield(void)
 static void
 swapd(void)
 {
-  printf("swapd: started\n");
+  // Quietly yield control to other processes
   for(;;){
     yield();
   }
