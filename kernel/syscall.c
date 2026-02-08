@@ -105,6 +105,12 @@ extern uint64 sys_clcnt(void);
 extern uint64 sys_ptree(void);
 extern uint64 sys_cowfork(void);
 extern uint64 sys_physaddr(void);
+extern uint64 sys_get_pid(void);
+extern uint64 sys_set_pid_namespace(void);
+extern uint64 sys_get_pid_namespace(void);
+extern uint64 sys_getHostname(void);
+extern uint64 sys_setHostname(void);
+extern uint64 sys_unshare(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -134,6 +140,12 @@ static uint64 (*syscalls[])(void) = {
 [SYS_ptree]   sys_ptree,
 [SYS_cowfork] sys_cowfork,
 [SYS_physaddr] sys_physaddr,
+[SYS_get_pid] sys_get_pid,
+[SYS_set_pid_namespace] sys_set_pid_namespace,
+[SYS_get_pid_namespace] sys_get_pid_namespace,
+[SYS_getHostname] sys_getHostname,
+[SYS_setHostname] sys_setHostname,
+[SYS_unshare] sys_unshare,
 };
 
 uint sysclcnt = 0;

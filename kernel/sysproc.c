@@ -178,3 +178,155 @@ sys_physaddr(void)
   // Return page number (physical address divided by page size)
   return pa / PGSIZE;
 }
+
+// Get PID from current process's namespace
+uint64
+sys_get_pid(void)
+{
+  struct proc *p = myproc();
+  
+  if(p->pid_ns == 0)
+    return -1;
+  
+  return pid_namespace_get_pid(p->pid_ns);
+}
+
+// Get the next PID that will be assigned in the namespace
+uint64
+sys_get_pid_namespace(void)
+{
+  struct proc *p = myproc();
+  
+  if(p->pid_ns == 0)
+    return -1;
+  
+  acquire(&p->pid_ns->lock);
+  int next_pid = p->pid_ns->next_pid;
+  release(&p->pid_ns->lock);
+  
+  return next_pid;
+}
+
+// Set a new PID namespace (for creating new namespace)
+uint64
+sys_set_pid_namespace(void)
+{
+  struct proc *p = myproc();
+  
+  // Create a new namespace
+  struct pid_namespace *new_ns = pid_namespace_alloc();
+  if(new_ns == 0)
+    return -1;
+  
+  // Release old namespace and set new one
+  if(p->pid_ns)
+    pid_namespace_put(p->pid_ns);
+  
+  p->pid_ns = new_ns;
+  
+  return 0;
+}
+
+// Get hostname from UTS namespace
+uint64
+sys_getHostname(void)
+{
+  struct proc *p = myproc();
+  uint64 addr;
+  int len;
+  
+  argaddr(0, &addr);
+  argint(1, &len);
+  
+  if(p->uts_ns == 0)
+    return -1;
+  
+  acquire(&p->uts_ns->lock);
+  int hostname_len = strlen(p->uts_ns->hostname);
+  if(len < hostname_len + 1) {
+    release(&p->uts_ns->lock);
+    return -1;
+  }
+  
+  if(copyout(p->pagetable, addr, p->uts_ns->hostname, hostname_len + 1) < 0) {
+    release(&p->uts_ns->lock);
+    return -1;
+  }
+  release(&p->uts_ns->lock);
+  
+  return 0;
+}
+
+// Set hostname in UTS namespace
+uint64
+sys_setHostname(void)
+{
+  struct proc *p = myproc();
+  uint64 addr;
+  int len;
+  char hostname[HOSTNAME_LEN];
+  
+  argaddr(0, &addr);
+  argint(1, &len);
+  
+  if(p->uts_ns == 0)
+    return -1;
+  
+  if(len <= 0 || len >= HOSTNAME_LEN)
+    return -1;
+  
+  if(copyin(p->pagetable, hostname, addr, len) < 0)
+    return -1;
+  
+  hostname[len] = '\0';
+  
+  acquire(&p->uts_ns->lock);
+  safestrcpy(p->uts_ns->hostname, hostname, HOSTNAME_LEN);
+  release(&p->uts_ns->lock);
+  
+  return 0;
+}
+
+// Unshare creates new namespaces based on flags
+uint64
+sys_unshare(void)
+{
+  struct proc *p = myproc();
+  int flags;
+  
+  argint(0, &flags);
+  
+  if(flags & CLONE_NEWPID) {
+    struct pid_namespace *new_ns = pid_namespace_alloc();
+    if(new_ns == 0)
+      return -1;
+    pid_namespace_put(p->pid_ns);
+    p->pid_ns = new_ns;
+  }
+  
+  if(flags & CLONE_NEWUTS) {
+    struct uts_namespace *new_ns = uts_namespace_alloc();
+    if(new_ns == 0)
+      return -1;
+    uts_namespace_put(p->uts_ns);
+    p->uts_ns = new_ns;
+  }
+  
+  if(flags & CLONE_NEWIPC) {
+    struct ipc_namespace *new_ns = ipc_namespace_alloc();
+    if(new_ns == 0)
+      return -1;
+    ipc_namespace_put(p->ipc_ns);
+    p->ipc_ns = new_ns;
+  }
+  
+  if(flags & CLONE_NEWNS) {
+    struct mount_namespace *new_ns = mount_namespace_alloc(0);
+    if(new_ns == 0)
+      return -1;
+    mount_namespace_put(p->mnt_ns);
+    p->mnt_ns = new_ns;
+  }
+  
+  return 0;
+}

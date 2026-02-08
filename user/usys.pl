@@ -46,4 +46,8 @@ entry("clcnt");
 entry("ptree");
 entry("cowfork");
 entry("physaddr");
-
+entry("get_pid");
+entry("set_pid_namespace");
+entry("get_pid_namespace");entry("getHostname");
+entry("setHostname");
+entry("unshare");

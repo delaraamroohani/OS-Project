@@ -148,6 +148,12 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_reparent\
+	$U/_ns_basic\
+	$U/_ns_adv\
+	$U/_ns_test\
+	$U/_uts_test\
+	$U/_mount_test\
+	$U/_ipc_test\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
