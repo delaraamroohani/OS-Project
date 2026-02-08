@@ -133,3 +133,5 @@ struct sched_queue {
   int nt_running;           // Number of running processes
   int min_vruntime;         // Minimum vruntime among all processes
 };
+
+extern struct proc proc[NPROC];

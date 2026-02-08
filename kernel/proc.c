@@ -620,8 +620,8 @@ yield(void)
 static void
 swapd(void)
 {
+  printf("swapd: started\n");
   for(;;){
-    printf("swapd: alive\n");
     yield();
   }
 }
@@ -638,7 +638,7 @@ forkret(void)
   // Still holding p->lock from scheduler.
   release(&p->lock);
 
-  extern void swapd(void); // or static in proc.c
+  extern void swapd(void);
 
   if (first) {
     // File system initialization must be run in the context of a
@@ -646,6 +646,7 @@ forkret(void)
     // be run from main().
     fsinit(ROOTDEV);
 
+    swap_init();
     create_kernel_process("swapd", swapd);
 
     first = 0;
