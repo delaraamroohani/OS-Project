@@ -53,3 +53,4 @@ entry("setHostname");
 entry("unshare");
 entry("swap_fetch");
 entry("swap_complete");
+entry("swap_complete2");

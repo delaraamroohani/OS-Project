@@ -219,8 +219,9 @@ struct proc*    minheap_extract_min(struct minheap *);
 
 void create_kernel_process(const char *name, void (*entrypoint)(void));
 
-// swap subsystem (stage 2)
+// swap subsystem
 void swap_init(void);
 void swapd(void);
 void swap_wait_for_free_page(void);
+int swap_read_page(int pid, uint64 va, uint64 dst_pa);
 

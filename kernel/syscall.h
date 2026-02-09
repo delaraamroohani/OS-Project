@@ -32,3 +32,4 @@
 #define SYS_unshare 31
 #define SYS_swap_fetch    32
 #define SYS_swap_complete 33
+#define SYS_swap_complete2  34

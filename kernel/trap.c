@@ -16,6 +16,8 @@ void kernelvec();
 
 extern int devintr();
 
+static int swapin_page(struct proc *p, uint64 va, pte_t *pte);
+
 void
 trapinit(void)
 {
@@ -69,24 +71,59 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if(r_scause() == 15) {
-    // Store page fault - could be COW or lazy allocation
-    uint64 va = r_stval();
+    // Store page fault: could be swap-in, COW, or lazy allocation
+    uint64 va = PGROUNDDOWN(r_stval());
     pte_t *pte = walk(p->pagetable, va, 0);
-    
-    // First check if it's a COW page fault
-    if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)) {
-      // COW page fault
+
+    // (A) SWAP-IN has priority: V=0 but SWP=1
+    if(pte != 0 && ((*pte & PTE_V) == 0) && ((*pte & PTE_SWP) != 0)) {
+      if(swapin_page(p, va, pte) < 0) {
+        printf("usertrap(): swapin failed va=0x%lx pid=%d\n", va, p->pid);
+        setkilled(p);
+      }
+    }
+    // (B) COW
+    else if(pte != 0 && ((*pte & PTE_V) != 0) && ((*pte & PTE_COW) != 0)) {
       if(cowfault(p->pagetable, va) < 0) {
         printf("usertrap(): COW fault failed for va=0x%lx pid=%d\n", va, p->pid);
         setkilled(p);
       }
-    } else if(vmfault(p->pagetable, va, 0) == 0) {
-      // Lazy allocation failed
+    }
+    // (C) Lazy allocation
+    else if(vmfault(p->pagetable, va, 0) == 0) {
       printf("usertrap(): page fault failed for va=0x%lx pid=%d\n", va, p->pid);
       setkilled(p);
     }
-  } else if(r_scause() == 13 && vmfault(p->pagetable, r_stval(), 1) != 0) {
-    // Load page fault on lazily-allocated page
+  } 
+  else if(r_scause() == 12) {
+    uint64 va = PGROUNDDOWN(r_stval());
+    pte_t *pte = walk(p->pagetable, va, 0);
+
+    if(pte != 0 && ((*pte & PTE_V) == 0) && ((*pte & PTE_SWP) != 0)) {
+      if(swapin_page(p, va, pte) < 0) {
+        printf("usertrap(): swapin failed va=0x%lx pid=%d\n", va, p->pid);
+        setkilled(p);
+      }
+    } else {
+      setkilled(p);
+    }
+  } 
+  else if(r_scause() == 13) {
+    // Load page fault: could be swap-in or lazy allocation
+    uint64 va = PGROUNDDOWN(r_stval());
+    pte_t *pte = walk(p->pagetable, va, 0);
+
+    if(pte != 0 && ((*pte & PTE_V) == 0) && ((*pte & PTE_SWP) != 0)) {
+      if(swapin_page(p, va, pte) < 0) {
+        printf("usertrap(): swapin failed va=0x%lx pid=%d\n", va, p->pid);
+        setkilled(p);
+      }
+    } else {
+      // Lazy allocation
+      if(vmfault(p->pagetable, va, 1) != 0) {
+        setkilled(p);
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
@@ -107,6 +144,31 @@ usertrap(void)
 
   // return to trampoline.S; satp value in a0.
   return satp;
+}
+
+static int
+swapin_page(struct proc *p, uint64 va, pte_t *pte)
+{
+  // 1) allocate RAM (may trigger swap-out)
+  char *mem;
+  while((mem = kalloc()) == 0){
+    swap_wait_for_free_page();
+  }
+
+  // 2) read from disk via user-space swapper
+  if(swap_read_page(p->pid, va, (uint64)mem) < 0){
+    kfree(mem);
+    return -1;
+  }
+
+  // 3) rebuild PTE with correct perms
+  pte_t flags = *pte & (PTE_R | PTE_W | PTE_X | PTE_U | PTE_COW);
+  *pte = PA2PTE((uint64)mem) | flags | PTE_V;   // NOTE: no PTE_SWP
+
+  // 4) flush TLB for safety
+  sfence_vma();
+
+  return 0;
 }
 
 //

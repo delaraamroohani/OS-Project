@@ -83,7 +83,28 @@ main(void)
       } else {
         swap_complete(0);
       }
-    } else {
+    } 
+    
+    else if (t.op == SWAP_OP_READ){
+      format_swap_filename(fname, sizeof(fname), t.pid, t.va);
+
+      int fd = open(fname, O_RDONLY);
+      if(fd < 0){
+        swap_complete2(-1, page);
+        continue;
+      }
+
+      int n = read(fd, page, 4096);
+      close(fd);
+
+      if(n != 4096)
+        swap_complete2(-1, page);
+        else
+          swap_complete2(0, page);
+
+      continue;
+    }
+    else {
       swap_complete(-1);
     }
   }

@@ -113,6 +113,7 @@ extern uint64 sys_setHostname(void);
 extern uint64 sys_unshare(void);
 extern uint64 sys_swap_fetch(void);
 extern uint64 sys_swap_complete(void);
+extern uint64 sys_swap_complete2(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -150,6 +151,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_unshare] sys_unshare,
 [SYS_swap_fetch]    sys_swap_fetch,
 [SYS_swap_complete] sys_swap_complete,
+[SYS_swap_complete2] sys_swap_complete2,
 };
 
 uint sysclcnt = 0;

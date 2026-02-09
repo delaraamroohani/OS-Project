@@ -385,3 +385,32 @@ sys_swap_complete(void)
 
   return 0;
 }
+
+uint64
+sys_swap_complete2(void)
+{
+  int status;
+  uint64 buf_uaddr;
+  struct proc *p = myproc();
+
+  argint(0, &status);
+  argaddr(1, &buf_uaddr);
+
+  acquire(&swapio_lock);
+
+  // if this completion is for a READ and it succeeded, copy the page into kernel mailbox
+  if(status == 0 && swapio_task.op == SWAP_OP_READ){
+    if(copyin(p->pagetable, swapio_page, buf_uaddr, PGSIZE) < 0){
+      status = -1;
+    }
+  }
+
+  swapio_status = status;
+  swapio_done = 1;
+  swapio_pending = 0;
+  wakeup((void*)&swapio_done_chan);
+
+  release(&swapio_lock);
+  return 0;
+}
+

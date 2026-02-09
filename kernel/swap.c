@@ -75,6 +75,43 @@ swapio_write_page(int pid, uint64 va, uint64 pa)
   return st;
 }
 
+int
+swap_read_page(int pid, uint64 va, uint64 dst_pa)
+{
+  swapio_init_once();
+
+  acquire(&swapio_lock);
+
+  while(swapio_pending){
+    sleep((void*)&swapio_done_chan, &swapio_lock);
+  }
+
+  swapio_task.op  = SWAP_OP_READ;
+  swapio_task.pid = pid;
+  swapio_task.va  = va;
+
+  swapio_done = 0;
+  swapio_status = 0;
+  swapio_pending = 1;
+
+  // wake user swapper (blocked in sys_swap_fetch)
+  wakeup((void*)&swapio_req_chan);
+
+  // wait for completion
+  while(!swapio_done){
+    sleep((void*)&swapio_done_chan, &swapio_lock);
+  }
+
+  int st = swapio_status;
+  if(st == 0){
+    memmove((void*)dst_pa, swapio_page, PGSIZE);
+  }
+
+  release(&swapio_lock);
+  return st;
+}
+
+
 // ------------------------------------------------------------
 // Swap-out request queue + swapd
 // ------------------------------------------------------------
