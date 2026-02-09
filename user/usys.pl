@@ -51,3 +51,5 @@ entry("set_pid_namespace");
 entry("get_pid_namespace");entry("getHostname");
 entry("setHostname");
 entry("unshare");
+entry("swap_fetch");
+entry("swap_complete");

@@ -30,3 +30,5 @@
 #define SYS_getHostname 29
 #define SYS_setHostname 30
 #define SYS_unshare 31
+#define SYS_swap_fetch    32
+#define SYS_swap_complete 33

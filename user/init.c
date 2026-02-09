@@ -23,6 +23,11 @@ main(void)
   dup(0);  // stdout
   dup(0);  // stderr
 
+  if(fork() == 0){
+    exec("swapper", (char*[]){"swapper", 0});
+    exit(1);
+  }
+
   for(;;){
     printf("init: starting sh\n");
     pid = fork();

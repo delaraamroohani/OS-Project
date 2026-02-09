@@ -52,6 +52,8 @@ int get_pid_namespace(void);
 int getHostname(char *hostname, int len);
 int setHostname(const char *hostname, int len);
 int unshare(int flags);
+int swap_fetch(void *task, void *pagebuf);
+int swap_complete(int status);
 
 // Namespace flags for unshare()
 #define CLONE_NEWPID       0x20000000

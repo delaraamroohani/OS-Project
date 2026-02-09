@@ -6,6 +6,16 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "swap.h"
+
+extern struct spinlock swapio_lock;
+extern struct swap_task swapio_task;
+extern char swapio_page[PGSIZE];
+extern int swapio_pending;
+extern int swapio_done;
+extern int swapio_status;
+extern int swapio_req_chan;
+extern int swapio_done_chan;
 
 // Forward declaration
 int ptree(int pid, struct proc_tree *tree);
@@ -328,5 +338,50 @@ sys_unshare(void)
     p->mnt_ns = new_ns;
   }
   
+  return 0;
+}
+
+uint64
+sys_swap_fetch(void)
+{
+  uint64 task_uaddr, buf_uaddr;
+  struct proc *p = myproc();
+
+  argaddr(0, &task_uaddr);
+  argaddr(1, &buf_uaddr);
+
+  acquire(&swapio_lock);
+  while(swapio_pending == 0){
+    sleep((void*)&swapio_req_chan, &swapio_lock);
+  }
+
+  if(copyout(p->pagetable, task_uaddr, (char*)&swapio_task, sizeof(swapio_task)) < 0){
+    release(&swapio_lock);
+    return -1;
+  }
+
+  if(copyout(p->pagetable, buf_uaddr, swapio_page, PGSIZE) < 0){
+    release(&swapio_lock);
+    return -1;
+  }
+
+  release(&swapio_lock);
+  return 0;
+}
+
+uint64
+sys_swap_complete(void)
+{
+  int status;
+
+  argint(0, &status);
+
+  acquire(&swapio_lock);
+  swapio_status = status;
+  swapio_done = 1;
+  swapio_pending = 0;
+  wakeup((void*)&swapio_done_chan);
+  release(&swapio_lock);
+
   return 0;
 }

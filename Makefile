@@ -155,6 +155,7 @@ UPROGS=\
 	$U/_uts_test\
 	$U/_mount_test\
 	$U/_ipc_test\
+	$U/_swapper\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

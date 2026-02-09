@@ -111,6 +111,8 @@ extern uint64 sys_get_pid_namespace(void);
 extern uint64 sys_getHostname(void);
 extern uint64 sys_setHostname(void);
 extern uint64 sys_unshare(void);
+extern uint64 sys_swap_fetch(void);
+extern uint64 sys_swap_complete(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -146,6 +148,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_getHostname] sys_getHostname,
 [SYS_setHostname] sys_setHostname,
 [SYS_unshare] sys_unshare,
+[SYS_swap_fetch]    sys_swap_fetch,
+[SYS_swap_complete] sys_swap_complete,
 };
 
 uint sysclcnt = 0;
