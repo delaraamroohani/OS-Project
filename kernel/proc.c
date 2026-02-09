@@ -966,11 +966,9 @@ static void
 kproc_start(void)
 {
   struct proc *p = myproc();
-
-  // We arrive here still holding p->lock (scheduler acquired it).
   release(&p->lock);
 
-  intr_on(); // safe; also prevents deadlock-like “everything off”
+  intr_on(); 
 
   if(p->kentry)
     p->kentry();

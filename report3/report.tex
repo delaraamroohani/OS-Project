@@ -1,0 +1,624 @@
+\documentclass[12pt]{article}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{subcaption}
+\usepackage{xepersian}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+
+
+
+\lstset{
+  language=C,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue},
+  stringstyle=\color{orange},
+  commentstyle=\color{gray},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  breaklines=true,
+  captionpos=b
+}
+
+
+\setcounter{secnumdepth}{0}
+\settextfont[Kashida]{XB Niloofar}
+\setkeys{Gin}{width =\textwidth }
+
+\title {پروژه سوم سیستم های عامل}
+\author {دلارام روحانی 40231026 \\
+        امیرعباس انتظاری 40231006}
+
+
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{\lr{Swapping}}
+
+\subsection{مقدمه}
+سیستم‌عامل \lr{xv6} به‌صورت پیش‌فرض تنها از حافظه‌ی اصلی (\lr{RAM}) برای نگهداری صفحات استفاده می‌کند و در صورت پر شدن حافظه، تخصیص حافظه با شکست مواجه می‌شود. هدف فاز اول این پروژه، پیاده‌سازی مکانیزم \lr{Swap Memory} است تا سیستم‌عامل بتواند در شرایط کمبود حافظه، صفحات کم‌استفاده را به دیسک منتقل کرده و در صورت نیاز مجدداً آن‌ها را به حافظه بازگرداند.
+
+در این فاز، تمرکز اصلی بر طراحی و پیاده‌سازی سه بخش زیر است:
+\begin{itemize}
+  \item ایجاد فرآیند کرنلی برای مدیریت \lr{Swap} (daemon)
+  \item پیاده‌سازی \lr{Swap-out} (خارج کردن صفحه از حافظه)
+  \item پیاده‌سازی \lr{Swap-in} (بازگرداندن صفحه به حافظه هنگام \lr{Page Fault})
+\end{itemize}
+
+\subsection{نمای کلی طراحی}
+ایده‌ی اصلی این فاز مشابه سیستم‌های عامل واقعی است:
+\begin{itemize}
+  \item حافظه‌ی اصلی نقش یک کش را دارد.
+  \item دیسک نقش فضای پشتیبان \lr{(Backing Store)} را ایفا می‌کند.
+  \item جدول صفحات مشخص می‌کند که هر صفحه در حال حاضر در \lr{RAM} است یا روی دیسک.
+\end{itemize}
+
+طبق صورت پروژه، برای جلوگیری از پیچیدگی‌های کرنل و مشکلات ناشی از عملیات فایل در کرنل، خواندن/نوشتن فایل‌های \lr{swap} در \textbf{فضای کاربر} انجام می‌شود و کرنل تنها مسئول هماهنگی، انتخاب صفحه قربانی، تغییر \lr{PTE} و آزادسازی/بازگردانی حافظه است.
+
+\subsection{ایجاد فرآیند کرنلی \texttt{swapd}}
+برای مدیریت عملیات \lr{Swap-out} یک فرآیند کرنلی دائمی (daemon) به نام \texttt{swapd} ایجاد شده است. این فرآیند مانند یک پردازه‌ی عادی توسط زمان‌بند اجرا می‌شود، اما هرگز وارد فضای کاربر نمی‌شود و تمام عمر خود را در کرنل سپری می‌کند.
+
+\subsubsection{توسعه ساختار پردازه}
+در فایل \texttt{proc.h} به ساختار \texttt{proc} دو فیلد جدید اضافه شد:
+\begin{LTR}
+\begin{lstlisting}
+int is_kproc;
+void (*kentry)(void);
+\end{lstlisting}
+\end{LTR}
+
+فیلد \texttt{is\_kproc} مشخص می‌کند پردازه کرنلی است یا نه، و \texttt{kentry} اشاره‌گری به تابعی است که نقطه‌ی شروع اجرای پردازه در کرنل محسوب می‌شود.
+
+\subsubsection{ساخت پردازه کرنلی}
+در فایل \texttt{proc.c} تابع \texttt{create\_kernel\_process} پیاده‌سازی شد. این تابع یک \lr{proc} جدید می‌سازد، آن را به‌عنوان پردازه‌ی کرنلی علامت‌گذاری می‌کند، زمینه‌ی اجرایی آن را طوری تنظیم می‌کند که به‌جای \texttt{forkret} وارد تابع شروع کرنلی شود، سپس آن را \lr{RUNNABLE} کرده و وارد صف زمان‌بند می‌کند.
+
+همچنین تابع \texttt{kproc\_start} به‌عنوان نقطه‌ی ورود مشترک پردازه‌های کرنلی اضافه شد: ابتدا قفل پردازه آزاد می‌شود، وقفه‌ها فعال می‌شوند، سپس \texttt{kentry} اجرا می‌گردد و اگر تابع بازگردد، پردازه با \texttt{yield} در حلقه‌ی بی‌نهایت باقی می‌ماند تا هیچ‌گاه «از کرنل خارج نشود».
+
+\subsubsection{رفتار \texttt{swapd}}
+تابع \texttt{swapd} به صورت حلقه‌ی بی‌نهایت اجرا می‌شود:
+\begin{itemize}
+  \item اگر درخواستی برای آزادسازی حافظه وجود نداشته باشد، \texttt{sleep} می‌کند.
+  \item با ورود درخواست، یک صفحه قربانی انتخاب و \lr{Swap-out} می‌شود.
+  \item پس از آزاد شدن حداقل یک صفحه فیزیکی، تمام پردازه‌های منتظر حافظه بیدار می‌شوند.
+\end{itemize}
+
+\subsection{شروع \lr{Swap-out}: نقطه‌ی ورود در \texttt{uvmalloc}}
+شروع \lr{Swap-out} زمانی رخ می‌دهد که تخصیص حافظه‌ی فیزیکی شکست بخورد.
+
+در فایل \texttt{vm.c}، در تابع \texttt{uvmalloc}، به جای آنکه با شکست \texttt{kalloc()} عملیات تخصیص متوقف شود، پردازه وارد حالت انتظار می‌شود تا \texttt{swapd} یک صفحه آزاد کند:
+\begin{LTR}
+\begin{lstlisting}
+while((mem = kalloc()) == 0){
+  swap_wait_for_free_page();
+}
+\end{lstlisting}
+\end{LTR}
+
+به این ترتیب، تخصیص حافظه در سطح \lr{user} شکست نمی‌خورد، بلکه کرنل به صورت کنترل‌شده فضا ایجاد می‌کند.
+
+\subsection{صف درخواست‌های \lr{Swap} و مفهوم \texttt{chan}}
+در فایل \texttt{swap.c} یک صف حلقوی (\lr{ring buffer}) برای درخواست‌ها پیاده‌سازی شد. برای هماهنگی بین پردازه‌ها و \texttt{swapd} از مکانیزم \texttt{sleep/wakeup} در xv6 استفاده شده است.
+
+در xv6، \texttt{sleep(chan, lock)} پردازه را روی «کانال» مشخص‌شده می‌خواباند و \texttt{wakeup(chan)} تمام پردازه‌های خوابیده روی آن کانال را بیدار می‌کند. \texttt{chan} صرفاً یک آدرس (\texttt{void*}) است که به عنوان کلید همگام‌سازی استفاده می‌شود.
+
+دو کانال اصلی در این فاز:
+\begin{itemize}
+  \item \texttt{swapq\_chan}: کانالی که \texttt{swapd} هنگام خالی بودن صف روی آن می‌خوابد.
+  \item \texttt{swap\_wait\_chan}: کانالی که پردازه‌های منتظر آزاد شدن حافظه روی آن می‌خوابند.
+\end{itemize}
+
+تابع \texttt{swap\_wait\_for\_free\_page} درخواست را در صف قرار می‌دهد، \texttt{swapd} را بیدار می‌کند، سپس خود پردازه را تا آزاد شدن حداقل یک صفحه فیزیکی روی \texttt{swap\_wait\_chan} می‌خواباند.
+
+\subsection{انتخاب صفحه‌ی قربانی: تقریب \lr{LRU} با \texttt{PTE\_A}}
+برای انتخاب صفحه مناسب جهت \lr{Swap-out} از یک تقریب \lr{LRU} به سبک \lr{Second-Chance} استفاده شد.
+
+در معماری \lr{RISC-V} سخت‌افزار هنگام دسترسی به یک صفحه، بیت \texttt{Accessed} را در \lr{PTE} فعال می‌کند (بیت \texttt{PTE\_A}). الگوریتم انتخاب قربانی به صورت دو گذر اجرا می‌شود:
+\begin{itemize}
+  \item \textbf{گذر اول:} اگر صفحه \texttt{PTE\_A=1} داشته باشد، بیت آن پاک می‌شود تا «فرصت دوم» داده شود.
+  \item \textbf{گذر دوم:} اولین صفحه‌ی قابل تخلیه که \texttt{PTE\_A=0} باشد به عنوان قربانی انتخاب می‌شود.
+\end{itemize}
+
+همچنین صفحات غیرقابل تخلیه نادیده گرفته می‌شوند (مثلاً صفحات کرنل، صفحات غیرمعتبر، یا صفحاتی که قبلاً \lr{swap} شده‌اند).
+
+\subsection{بیت \texttt{PTE\_SWP} و دلیل نیاز به آن}
+صرف صفر کردن \texttt{PTE\_V} کافی نیست؛ زیرا یک \lr{PTE} نامعتبر می‌تواند دو معنی کاملاً متفاوت داشته باشد:
+\begin{itemize}
+  \item صفحه واقعاً نگاشت نشده است (دسترسی غیرمجاز)
+  \item صفحه نگاشت شده بوده اما به دیسک منتقل شده است (قابل بازیابی)
+\end{itemize}
+
+برای تفکیک این دو حالت، یک بیت نرم‌افزاری جدید به \texttt{riscv.h} اضافه شد:
+\begin{LTR}
+\begin{lstlisting}
+#define PTE_SWP (1L << ...)
+\end{lstlisting}
+\end{LTR}
+
+معانی حالت‌ها:
+\begin{itemize}
+  \item \texttt{PTE\_V=1}: صفحه در \lr{RAM} قرار دارد.
+  \item \texttt{PTE\_V=0} و \texttt{PTE\_SWP=1}: صفحه \lr{swap} شده و قابل بازیابی است.
+  \item \texttt{PTE\_V=0} و \texttt{PTE\_SWP=0}: دسترسی نامعتبر (برنامه باید کشته شود).
+\end{itemize}
+
+\subsection{نوشتن صفحه روی دیسک در فضای کاربر (\texttt{swapper})}
+طبق صورت پروژه، فایل \lr{swap} باید به‌ازای هر صفحه ساخته شود و فرمت نام‌گذاری آن:
+\[
+\texttt{pid\_[L2,L1,L0].swp}
+\]
+است تا بازیابی صفحه در آینده امکان‌پذیر باشد.
+
+به دلیل ممنوعیت/عدم توصیه عملیات فایل در کرنل، یک برنامه‌ی کاربری به نام \texttt{swapper} پیاده‌سازی شد. کرنل و این برنامه از طریق یک \lr{mailbox} مشترک و چند \lr{syscall} با یکدیگر ارتباط برقرار می‌کنند:
+\begin{itemize}
+  \item کرنل هنگام \lr{Swap-out} داده صفحه را در بافر مشترک قرار داده و یک \texttt{task} ثبت می‌کند.
+  \item \texttt{swapper} با \texttt{swap\_fetch} درخواست را دریافت می‌کند.
+  \item بسته به نوع عملیات (\lr{WRITE/READ}) فایل \texttt{.swp} را می‌نویسد یا می‌خواند.
+  \item سپس با \texttt{swap\_complete} (و در حالت \lr{READ} با نسخه‌ای که داده را برمی‌گرداند) نتیجه را به کرنل اعلام می‌کند.
+\end{itemize}
+
+\subsection{مراحل \lr{Swap-out} در \texttt{swapout\_one\_page}}
+عملیات کامل \lr{Swap-out} به صورت زیر است:
+\begin{enumerate}
+  \item انتخاب صفحه قربانی با الگوریتم \lr{LRU} تقریبی.
+  \item استخراج آدرس فیزیکی صفحه از \lr{PTE}.
+  \item ارسال درخواست \lr{WRITE} به برنامه‌ی \texttt{swapper} و انتظار برای اتمام نوشتن.
+  \item به‌روزرسانی \lr{PTE}: صفر کردن \texttt{PTE\_V} و فعال‌کردن \texttt{PTE\_SWP}.
+  \item آزاد کردن صفحه فیزیکی با \texttt{kfree} تا حافظه در دسترس تخصیص‌های بعدی قرار گیرد.
+\end{enumerate}
+
+پس از آزاد شدن حداقل یک صفحه، \texttt{swapd} پردازه‌های منتظر روی \texttt{swap\_wait\_chan} را بیدار می‌کند تا تخصیص حافظه ادامه یابد.
+
+\subsection{\lr{Swap-in}: بازگردانی صفحه هنگام \lr{Page Fault}}
+\lr{Swap-in} زمانی رخ می‌دهد که پردازه به صفحه‌ای دسترسی پیدا کند که در \lr{RAM} نیست اما \lr{swap} شده است.
+
+\subsubsection{تشخیص در \texttt{usertrap}}
+در فایل \texttt{trap.c} در تابع \texttt{usertrap}، هنگام وقوع \lr{page fault} (برای \lr{load/store} و در صورت نیاز \lr{instruction}) آدرس خطا از \texttt{stval} خوانده می‌شود و \lr{PTE} مربوط به آن \lr{VA} بررسی می‌گردد. اگر:
+\[
+(\texttt{PTE\_V} = 0) \land (\texttt{PTE\_SWP} = 1)
+\]
+باشد، یعنی صفحه \lr{swap} شده و باید \lr{swap-in} انجام شود.
+
+\subsubsection{مراحل \texttt{swapin\_page}}
+تابع \texttt{swapin\_page} مراحل زیر را انجام می‌دهد:
+\begin{enumerate}
+  \item تخصیص یک صفحه فیزیکی جدید (در صورت کمبود حافظه، دوباره از \texttt{swap\_wait\_for\_free\_page} استفاده می‌شود).
+  \item ارسال درخواست \lr{READ} به \texttt{swapper} برای خواندن فایل \texttt{.swp}.
+  \item کپی داده‌ی برگشتی به صفحه فیزیکی جدید.
+  \item بازسازی \lr{PTE}: قرار دادن \lr{PA} جدید، فعال کردن \texttt{PTE\_V} و پاک کردن \texttt{PTE\_SWP}، و حفظ مجوزهای صفحه (\texttt{R/W/X/U}).
+  \item اجرای \texttt{sfence\_vma} برای همگام‌سازی \lr{TLB}.
+\end{enumerate}
+
+پس از این مراحل، دستور خطادار مجدداً اجرا شده و برنامه بدون خطا ادامه می‌یابد.
+
+\subsection{تست فاز اول (\texttt{swaptest})}
+برای تست صحیح بودن \lr{Swap-out/Swap-in} یک برنامه‌ی کاربری \texttt{swaptest} نوشته شد که:
+\begin{itemize}
+  \item ۲۰ پردازه‌ی فرزند ایجاد می‌کند.
+  \item هر فرزند ۱۰ بار حافظه‌ی ۴KB تخصیص می‌دهد.
+  \item هر صفحه با الگوی مشخص پر می‌شود.
+  \item در انتها همه‌ی صفحات دوباره بررسی می‌شوند تا فساد داده رخ نداده باشد.
+\end{itemize}
+
+برای فعال شدن سریع‌تر \lr{swap} طبق پیشنهاد صورت پروژه، مقدار \texttt{PHYSTOP} در فایل \texttt{memlayout.h} کاهش داده شد تا حافظه فیزیکی محدودتر شود و سیستم سریع‌تر به کمبود \lr{RAM} برسد.
+
+نمایش پیام \texttt{swaptest: ALL OK} نشان‌دهنده‌ی موفقیت تست و در نتیجه تکمیل صحیح فاز اول است.
+
+\subsection{جمع‌بندی}
+در این فاز، یک سیستم \lr{Swap} کامل شامل \lr{Swap-out} و \lr{Swap-in} به xv6 اضافه شد. این پیاده‌سازی:
+\begin{itemize}
+  \item تحت فشار حافظه از شکست تخصیص جلوگیری می‌کند.
+  \item با استفاده از daemon کرنلی \texttt{swapd} مدیریت \lr{eviction} را از مسیرهای حساس جدا می‌کند.
+  \item با افزودن \texttt{PTE\_SWP} تفاوت بین صفحات نامعتبر و صفحات \lr{swap} شده را مشخص می‌کند.
+  \item عملیات فایل را مطابق صورت پروژه در فضای کاربر انجام می‌دهد.
+  \item با تست \texttt{swaptest} صحت عملکرد آن تأیید شده است.
+\end{itemize}
+
+
+\section{\lr{Namespace}ها}
+
+\lr{Namespace}ها مکانیزمی در سیستم‌عامل هستند که برای ایزوله‌سازی منابع بین پردازه‌ها استفاده می‌شوند. با استفاده از \lr{Namespace}ها، هر پردازه می‌تواند دید مستقلی از بخش‌هایی از سیستم داشته باشد، به‌طوری که تغییرات آن روی سایر پردازه‌ها تأثیری نگذارد. این مفهوم پایه‌ی اصلی پیاده‌سازی \lr{Container}ها در سیستم‌عامل‌های مدرن است.
+
+\subsection{\lr{PID Namespace}}
+\lr{PID Namespace} باعث می‌شود هر پردازه شناسه‌ی پردازه‌ی (\lr{PID}) مخصوص به فضای نام خود را داشته باشد. در این حالت، یک پردازه ممکن است در فضای نام خودش \lr{PID} متفاوتی نسبت به سیستم اصلی داشته باشد. این قابلیت برای ایزوله‌سازی درخت پردازه‌ها و اجرای مستقل برنامه‌ها بسیار کاربردی است.
+
+کد زیر مربوط به پیاده‌سازی \lr{PID Namespace} است. در این بخش، با استفاده از تابع
+\texttt{\lr{pid\_namespace\_alloc}} یک فضای نام جدید برای شناسه‌های پردازه ایجاد می‌شود.
+همچنین تابع \texttt{\lr{pid\_namespace\_get\_pid}} با استفاده از قفل، یک \lr{PID} یکتا
+در داخل فضای نام تولید می‌کند تا از تداخل بین پردازه‌ها جلوگیری شود.
+
+
+\begin{LTR}
+\begin{lstlisting}
+// تخصیص یک PID Namespace جدید
+struct pid_namespace*
+pid_namespace_alloc()
+{
+  struct pid_namespace *ns;
+  
+  ns = (struct pid_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcount = 1;
+  ns->next_pid = 1;
+  initlock(&ns->lock, "pid_ns");
+  
+  return ns;
+}
+
+// دریافت بعدی PID از namespace
+int
+pid_namespace_get_pid(struct pid_namespace *ns)
+{
+  int pid;
+  acquire(&ns->lock);
+  pid = ns->next_pid;
+  ns->next_pid = ns->next_pid + 1;
+  release(&ns->lock);
+  return pid;
+}
+\end{lstlisting}
+\end{LTR}
+
+\subsection{\lr{UTS Namespace}}
+\lr{UTS Namespace} امکان جداسازی اطلاعات مربوط به سیستم مانند نام میزبان (\lr{Hostname}) را فراهم می‌کند. هر فضای نام \lr{UTS} می‌تواند \lr{hostname} مخصوص به خود را داشته باشد، بدون اینکه روی سایر پردازه‌ها یا سیستم اصلی تأثیر بگذارد.
+
+کد زیر پیاده‌سازی \lr{UTS Namespace} را نشان می‌دهد. در این قسمت یک فضای نام
+جدید برای اطلاعات سیستمی مانند \lr{Hostname} ایجاد می‌شود. با استفاده از شمارنده
+ارجاع (\lr{refcnt}) و قفل، امکان اشتراک ایمن این فضا بین چند پردازه فراهم شده است.
+
+
+\begin{LTR}
+\begin{lstlisting}
+// تخصیص یک UTS Namespace جدید
+struct uts_namespace*
+uts_namespace_alloc(void)
+{
+  struct uts_namespace *ns;
+  
+  ns = (struct uts_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  memset(ns->hostname, 0, HOSTNAME_LEN);
+  initlock(&ns->lock, "uts_ns");
+  
+  return ns;
+}
+
+void
+uts_namespace_get(struct uts_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+\end{lstlisting}
+\end{LTR}
+
+\subsection{\lr{IPC Namespace}}
+\lr{IPC Namespace} برای ایزوله‌سازی منابع ارتباط بین‌پردازه‌ای مانند \lr{Semaphore}ها، \lr{Message Queue}ها و \lr{Shared Memory} استفاده می‌شود. با این کار، پردازه‌ها فقط می‌توانند به منابع \lr{IPC} داخل فضای نام خود دسترسی داشته باشند.
+
+در این بخش، کد مربوط به \lr{IPC Namespace} ارائه شده است. این پیاده‌سازی
+امکان ایزوله‌سازی منابع ارتباط بین‌پردازه‌ای را فراهم می‌کند. با تخصیص یک
+\lr{IPC Namespace} جدید، پردازه‌ها فقط به منابع ارتباطی داخل فضای نام خود
+دسترسی خواهند داشت.
+
+
+\begin{LTR}
+\begin{lstlisting}
+// تخصیص یک IPC Namespace جدید
+struct ipc_namespace*
+ipc_namespace_alloc(void)
+{
+  struct ipc_namespace *ns;
+  
+  ns = (struct ipc_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  initlock(&ns->lock, "ipc_ns");
+  
+  return ns;
+}
+
+void
+ipc_namespace_get(struct ipc_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+\end{lstlisting}
+\end{LTR}
+
+\subsection{\lr{Mount Namespace}}
+\lr{Mount Namespace} باعث جداسازی فضای فایل سیستم می‌شود. هر پردازه می‌تواند \lr{mount point}های مخصوص به خود را داشته باشد و تغییرات مربوط به \lr{mount} یا \lr{unmount} فایل سیستم در یک \lr{namespace}، روی سایر \lr{namespace}ها اعمال نمی‌شود.
+
+کد زیر پیاده‌سازی \lr{Mount Namespace} را نشان می‌دهد. در این فضا، هر پردازه
+می‌تواند نمای مستقل خود از سیستم فایل را داشته باشد. ریشه‌ی فایل سیستم
+در ساختار \lr{namespace} ذخیره شده و با استفاده از قفل، هماهنگی بین پردازه‌ها
+حفظ می‌شود.
+
+\begin{LTR}
+\begin{lstlisting}
+// تخصیص یک Mount Namespace جدید
+struct mount_namespace*
+mount_namespace_alloc(struct inode *root)
+{
+  struct mount_namespace *ns;
+  
+  ns = (struct mount_namespace *)kalloc();
+  if(ns == 0)
+    return 0;
+  
+  ns->refcnt = 1;
+  ns->root = root;
+  initlock(&ns->lock, "mount_ns");
+  
+  return ns;
+}
+
+void
+mount_namespace_get(struct mount_namespace *ns)
+{
+  if(ns == 0)
+    return;
+  acquire(&ns->lock);
+  ns->refcnt++;
+  release(&ns->lock);
+}
+\end{lstlisting}
+\end{LTR}
+
+\section{ns\_test.c}
+
+فایل \texttt{ns\_test.c} یک برنامه‌ی جامع برای تست و نمایش کارایی namespace های پیاده‌سازی شده است. این برنامه مختلف حالت‌های استفاده از namespace ها را بررسی می‌کند و نحوه ایزوله‌سازی منابع را نشان می‌دهد.
+
+\textbf{توضیح برنامه:} این تست شامل پنج بخش اصلی است:
+
+\begin{enumerate}
+\item \textbf{\lr{Test 1}}: بررسی \texttt{\lr{PID Namespace}} و اینکه چگونه هر process یک \lr{PID} منحصربه‌فرد دریافت می‌کند.
+
+\item \textbf{\lr{Test 2}}: تست \texttt{\lr{UTS Namespace}} برای تغییر و بررسی نام میزبان (\texttt{\lr{hostname}}).
+
+\item \textbf{\lr{Test 3}}: استفاده از \texttt{\lr{unshare}} برای جداسازی \texttt{\lr{UTS Namespace}} و اینکه child process می‌تواند hostname مستقل داشته باشد.
+
+\item \textbf{\lr{Test 4}}: جداسازی \texttt{\lr{PID Namespace}} با استفاده از \texttt{\lr{CLONE\_NEWPID}}.
+
+\item \textbf{\lr{Test 5}}: استفاده همزمان از چند flag برای جداسازی مختلف namespace ها.
+\end{enumerate}
+
+\begin{LTR}
+\begin{lstlisting}
+// تست جامع Namespace ها
+
+int
+main(int argc, char *argv[])
+{
+  char hostname[64];
+  int pid;
+
+  printf("=== Comprehensive Namespace Test ===\n\n");
+
+  // Test 1: PID Namespace
+  printf("Test 1: PID Namespace\n");
+  printf("  Current namespace next_pid: %d\n", 
+         get_pid_namespace());
+  
+  pid = fork();
+  if(pid == 0) {
+    printf("  Child PID: %d\n", getpid());
+    exit(0);
+  } else {
+    wait(0);
+  }
+
+  // Test 2: UTS Namespace (Hostname)
+  printf("Test 2: UTS Namespace\n");
+  if(getHostname(hostname, 64) == 0) {
+    printf("  Hostname: %s\n", hostname);
+  }
+  setHostname("container1", 10);
+
+  // Test 3: Unshare UTS Namespace
+  printf("Test 3: Unshare UTS Namespace\n");
+  pid = fork();
+  if(pid == 0) {
+    unshare(CLONE_NEWUTS);
+    setHostname("isolated-host", 14);
+    if(getHostname(hostname, 64) == 0) {
+      printf("  Child hostname: %s\n", hostname);
+    }
+    exit(0);
+  } else {
+    wait(0);
+  }
+
+  printf("\n=== All Tests Complete ===\n");
+  exit(0);
+}
+\end{lstlisting}
+\end{LTR}
+
+نکات مهم این برنامه:
+\begin{itemize}
+\item استفاده از تابع \texttt{\lr{unshare}} برای جداسازی namespace های والد و فرزند.
+\item بررسی \texttt{\lr{CLONE\_NEWPID}} و \texttt{\lr{CLONE\_NEWUTS}} flag ها برای ایجاد namespace های جدید.
+\item نمایش اینکه فرزند می‌تواند تغییرات خود را بدون تأثیر بر والد انجام دهد.
+\item آزمایش همزمان چند namespace برای درک عملکرد کامل سیستم.
+\end{itemize}
+
+
+\end{document}
+
+
+\title{گزارش فاز اول پروژه\\
+پیاده‌سازی Swap Memory در xv6}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{مقدمه}
+سیستم‌عامل xv6 به‌صورت پیش‌فرض تنها از حافظه‌ی اصلی (RAM) برای نگهداری صفحات استفاده می‌کند و در صورت پر شدن حافظه، تخصیص حافظه با شکست مواجه می‌شود. هدف فاز اول این پروژه، پیاده‌سازی مکانیزم \lr{Swap Memory} است تا سیستم‌عامل بتواند در شرایط کمبود حافظه، صفحات کم‌استفاده را به دیسک منتقل کرده و در صورت نیاز مجدداً آن‌ها را به حافظه بازگرداند.
+
+در این فاز، تمرکز اصلی بر طراحی و پیاده‌سازی سه بخش زیر است:
+\begin{itemize}
+  \item ایجاد فرآیند کرنلی برای مدیریت Swap
+  \item پیاده‌سازی Swap-out (خارج کردن صفحه از حافظه)
+  \item پیاده‌سازی Swap-in (بازگرداندن صفحه به حافظه)
+\end{itemize}
+
+\section{نمای کلی طراحی}
+ایده‌ی اصلی این فاز مشابه سیستم‌های عامل واقعی است:
+\begin{itemize}
+  \item حافظه‌ی اصلی نقش یک کش را دارد
+  \item دیسک نقش فضای پشتیبان \lr{(Backing Store)} را ایفا می‌کند
+  \item جدول صفحات مشخص می‌کند که هر صفحه در حال حاضر در RAM است یا روی دیسک
+\end{itemize}
+
+به دلیل محدودیت‌های xv6 و برای جلوگیری از پیچیدگی‌های کرنل، عملیات ورودی/خروجی فایل (خواندن و نوشتن فایل swap) در \textbf{فضای کاربر} انجام می‌شود و کرنل تنها هماهنگی و مدیریت را بر عهده دارد.
+
+\section{فرآیند کرنلی Swap (swapd)}
+برای مدیریت عملیات Swap-out یک فرآیند کرنلی دائمی (daemon) به نام \texttt{swapd} ایجاد شده است.
+
+\subsection{ایجاد فرآیند کرنلی}
+در فایل‌های \texttt{proc.h} و \texttt{proc.c} ساختار \texttt{proc} توسعه داده شده و دو فیلد جدید اضافه شده است:
+\begin{lstlisting}
+int is_kproc;
+void (*kentry)(void);
+\end{lstlisting}
+
+این فیلدها مشخص می‌کنند که یک فرآیند، کرنلی است و نقطه‌ی شروع اجرای آن کجاست.
+
+تابع \texttt{create\_kernel\_process} یک فرآیند جدید ایجاد کرده، آن را در صف زمان‌بند قرار می‌دهد و باعث می‌شود که به جای بازگشت به فضای کاربر، وارد تابع کرنلی مشخص‌شده شود.
+
+\subsection{تابع swapd}
+تابع \texttt{swapd} به‌صورت یک حلقه‌ی بی‌نهایت اجرا می‌شود:
+\begin{itemize}
+  \item اگر درخواستی برای Swap وجود نداشته باشد، به خواب می‌رود
+  \item در صورت وجود درخواست، یک صفحه را از حافظه خارج می‌کند
+  \item پس از آزاد شدن حافظه، فرآیندهای منتظر را بیدار می‌کند
+\end{itemize}
+
+\section{شروع Swap-out}
+Swap-out زمانی آغاز می‌شود که تخصیص حافظه با شکست مواجه شود.
+
+\subsection{نقطه‌ی شروع در uvmalloc}
+در فایل \texttt{vm.c}، در تابع \texttt{uvmalloc}، زمانی که \texttt{kalloc()} حافظه‌ای برنگرداند، فرآیند فراخواننده وارد حالت انتظار می‌شود:
+\begin{lstlisting}
+while((mem = kalloc()) == 0){
+  swap_wait_for_free_page();
+}
+\end{lstlisting}
+
+این کار باعث می‌شود فرآیند به جای شکست خوردن، منتظر آزاد شدن یک صفحه بماند.
+
+\section{صف درخواست‌های Swap}
+در فایل \texttt{swap.c} یک صف حلقوی از درخواست‌ها پیاده‌سازی شده است. همچنین از دو کانال برای هماهنگی استفاده می‌شود:
+\begin{itemize}
+  \item کانال اول برای خوابیدن \texttt{swapd} در صورت خالی بودن صف
+  \item کانال دوم برای خوابیدن فرآیندهایی که منتظر حافظه هستند
+\end{itemize}
+
+مکانیزم \texttt{sleep} و \texttt{wakeup} در xv6 تضمین می‌کند که این هماهنگی بدون شرایط رقابتی انجام شود.
+
+\section{انتخاب صفحه‌ی قربانی (LRU)}
+برای انتخاب صفحه‌ی مناسب جهت Swap-out، از یک تقریب الگوریتم \lr{LRU} استفاده شده است.
+
+\subsection{استفاده از بیت Accessed}
+در معماری RISC-V، سخت‌افزار هنگام دسترسی به یک صفحه، بیت \texttt{PTE\_A} را فعال می‌کند. الگوریتم پیاده‌سازی‌شده به صورت دو مرحله‌ای است:
+\begin{itemize}
+  \item در مرحله‌ی اول، اگر صفحه‌ای \texttt{PTE\_A} فعال داشته باشد، این بیت پاک می‌شود
+  \item در مرحله‌ی دوم، اولین صفحه‌ای که بیت \texttt{PTE\_A} آن صفر باشد، به عنوان قربانی انتخاب می‌شود
+\end{itemize}
+
+\section{متادیتای Swap و بیت PTE\_SWP}
+برای تشخیص تفاوت بین یک صفحه‌ی نامعتبر و یک صفحه‌ی Swap شده، یک بیت نرم‌افزاری جدید به جدول صفحات اضافه شده است:
+\begin{lstlisting}
+#define PTE_SWP (1L << ...)
+\end{lstlisting}
+
+معانی حالت‌ها:
+\begin{itemize}
+  \item \texttt{PTE\_V=1}: صفحه در حافظه است
+  \item \texttt{PTE\_V=0, PTE\_SWP=1}: صفحه Swap شده و قابل بازیابی است
+  \item \texttt{PTE\_V=0, PTE\_SWP=0}: دسترسی نامعتبر (خطای سگمنتیشن)
+\end{itemize}
+
+\section{نوشتن صفحات Swap در فضای کاربر}
+طبق صورت پروژه، عملیات فایل نباید در کرنل انجام شود. به همین دلیل یک برنامه‌ی کاربری به نام \texttt{swapper} نوشته شده است.
+
+\subsection{ارتباط کرنل و فضای کاربر}
+کرنل و برنامه‌ی swapper از طریق یک mailbox مشترک و syscallها با هم ارتباط برقرار می‌کنند:
+\begin{itemize}
+  \item کرنل درخواست Swap را ثبت می‌کند
+  \item swapper درخواست را دریافت کرده و فایل \texttt{.swp} را می‌نویسد یا می‌خواند
+  \item نتیجه به کرنل بازگردانده می‌شود
+\end{itemize}
+
+نام فایل swap به‌صورت:
+\[
+\texttt{pid\_[L2,L1,L0].swp}
+\]
+تعریف شده تا هر صفحه به‌صورت یکتا قابل بازیابی باشد.
+
+\section{Swap-in و Page Fault}
+Swap-in زمانی اتفاق می‌افتد که یک فرآیند به صفحه‌ای Swap شده دسترسی پیدا کند.
+
+\subsection{مدیریت Page Fault}
+در تابع \texttt{usertrap} در فایل \texttt{trap.c}، هنگام وقوع page fault:
+\begin{itemize}
+  \item آدرس خطادار استخراج می‌شود
+  \item اگر \texttt{PTE\_SWP} فعال باشد، فرآیند Swap-in آغاز می‌شود
+\end{itemize}
+
+\subsection{تابع swapin\_page}
+مراحل Swap-in:
+\begin{enumerate}
+  \item تخصیص یک صفحه‌ی فیزیکی جدید
+  \item خواندن داده‌ها از فایل swap توسط swapper
+  \item بازسازی ورودی جدول صفحات
+  \item پاک‌سازی بیت \texttt{PTE\_SWP} و فعال‌سازی \texttt{PTE\_V}
+  \item اجرای \texttt{sfence\_vma} برای همگام‌سازی TLB
+\end{enumerate}
+
+پس از این مراحل، دستور خطادار مجدداً اجرا شده و برنامه بدون خطا ادامه می‌یابد.
+
+\section{تست فاز اول}
+برای بررسی صحت پیاده‌سازی، برنامه‌ای به نام \texttt{swaptest} نوشته شده است:
+\begin{itemize}
+  \item ایجاد ۲۰ فرآیند فرزند
+  \item تخصیص ۱۰ صفحه‌ی ۴KB در هر فرزند
+  \item پر کردن صفحات با الگوی مشخص
+  \item بررسی صحت داده‌ها پس از Swap-out و Swap-in
+\end{itemize}
+
+برای فعال شدن سریع‌تر Swap، مقدار \texttt{PHYSTOP} در فایل \texttt{memlayout.h} کاهش داده شده است.
+
+نمایش پیام \texttt{swaptest: ALL OK} نشان‌دهنده‌ی موفقیت کامل فاز اول است.
+
+\section{نتیجه‌گیری}
+در این فاز، یک سیستم Swap کامل شامل Swap-out و Swap-in به xv6 اضافه شد. این پیاده‌سازی:
+\begin{itemize}
+  \item از نظر معماری به سیستم‌های عامل واقعی نزدیک است
+  \item جداسازی صحیح مسئولیت‌ها بین کرنل و فضای کاربر را رعایت می‌کند
+  \item تحت فشار حافظه به‌درستی عمل می‌کند
+\end{itemize}
+
+با موفقیت تست‌ها، فاز اول پروژه به‌طور کامل تکمیل شده است.
+
+\end{document}
